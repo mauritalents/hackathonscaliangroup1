@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ACIA : AI Continuous Improvement Assistant</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<div id="login">
+  <section class="lg-visual">
+    <img class="lw" src="assets/img-4a50c876.png" alt="Scalian" />
+    <div class="lg-pitch">
+      <h1>ACIA, l'assistant d'amélioration continue</h1>
+      <p>Il repère les irritants dans les tâches du quotidien et propose la réponse la plus simple. Un humain valide toujours.</p>
+    </div>
+    <img class="tag" src="assets/img-360ac9b2.png" alt="Humans &amp; Technology" />
+  </section>
+  <section class="lg-form">
+    <div class="lg-box">
+      <img class="lc" src="assets/img-ad9310e4.png" alt="Scalian" />
+      <h2>Connexion</h2>
+      <p class="sub" id="lg-sub">Connectez-vous avec votre compte ACIA.</p>
+      <div id="lg-auth">
+        <div class="lg-tabs">
+          <button class="lg-tab active" id="tab-in" type="button" onclick="authMode('in')">Se connecter</button>
+          <button class="lg-tab" id="tab-up" type="button" onclick="authMode('up')">Créer un compte</button>
+        </div>
+        <div id="lg-name-wrap" hidden><label for="lg-name">Nom complet</label><input id="lg-name" type="text" autocomplete="name" /></div>
+        <label for="lg-email">Adresse e-mail</label>
+        <input id="lg-email" type="email" autocomplete="email" />
+        <label for="lg-pass">Mot de passe</label>
+        <input id="lg-pass" type="password" autocomplete="current-password" />
+        <button id="lg-submit" class="lg-btn" type="button" onclick="authSubmit()">Se connecter</button>
+        <div id="lg-msg" class="lg-msg"></div>
+        <p class="lg-note">Le profil (collaborateur, manager, HRBP, direction) est attribué par l'administrateur du projet.</p>
+      </div>
+      <div class="lg-demo">
+        <button class="lg-link" type="button" onclick="document.getElementById('lg-demo-box').hidden=!document.getElementById('lg-demo-box').hidden">Mode démonstration (sans compte)</button>
+        <div id="lg-demo-box" hidden>
+          <label for="lg-role">Votre profil</label>
+          <select id="lg-role" onchange="document.getElementById('lg-go').disabled = !this.value">
+            <option value="">Sélectionnez un profil</option>
+            <option value="collab">Collaborateur · Camille, administration du personnel</option>
+            <option value="manager">Manager · Isabelle, BU Data</option>
+            <option value="hrbp">HRBP · Julien</option>
+            <option value="dir">Dirigeant · direction d'agence</option>
+          </select>
+          <button id="lg-go" class="lg-btn" disabled onclick="seConnecter()">Entrer en démonstration</button>
+          <p class="lg-note">Aucune donnée n'est enregistrée en base : tout reste dans votre navigateur. Données fictives. Le futur employé n'a pas d'accès : il reçoit seulement les mails de la RH.</p>
+        </div>
+      </div>
+      <div class="lg-edit"><img src="assets/img-d3019cbb.jpg" alt="IAE Paris Sorbonne × neocognition.ai" /></div>
+    </div>
+  </section>
+</div>
+<header class="app">
+  <div class="headrow">
+    <div class="logo img"><img src="assets/img-4a50c876.png" alt="Scalian" /></div>
+    <div class="brand"><b>ACIA</b><span>AI Continuous Improvement Assistant</span></div>
+    <div class="bento-wrap">
+        <button class="hicon" id="bento-btn" aria-label="Livrables du projet" aria-haspopup="true" aria-expanded="false" onclick="toggleBento(event)" title="Livrables du projet">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="currentColor"><circle cx="5" cy="5" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="12" cy="19" r="2"/><circle cx="19" cy="19" r="2"/></g></svg>
+        </button>
+        <div class="bento" id="bento" role="menu" hidden>
+          <div class="bento-h">Livrables du projet <small>hors produit</small></div>
+          <div class="bento-grid">
+            <a role="menuitem" href="livrables-01-04-rh-v6.docx" target="_blank"><span class="bt">01–04</span>Livrables 01 à 04<small>Word</small></a>
+            <a role="menuitem" href="v5-rh/jeu-de-donnees-rh-v5.docx" target="_blank"><span class="bt">DATA</span>Jeu de données<small>Word</small></a>
+            <a role="menuitem" href="schemas/schema-1-interactions-demo.png" target="_blank"><span class="bt">S1</span>Interactions de la démo<small>Schéma</small></a>
+            <a role="menuitem" href="schemas/schema-2-architecture.png" target="_blank"><span class="bt">S2</span>Architecture<small>Schéma</small></a>
+            <a role="menuitem" href="schemas/schema-3-personas.png" target="_blank"><span class="bt">S3</span>Personas<small>Schéma</small></a>
+            <a role="menuitem" href="schemas/schema-4-personnes-et-personas.png" target="_blank"><span class="bt">S4</span>Personnes et personas<small>Schéma</small></a>
+          </div>
+          <div class="bento-f">Déposez ces fichiers dans le dépôt, au même chemin, pour activer les liens.</div>
+        </div>
+      </div>
+      <span class="mode-flag" id="mode-flag"></span>
+      <div class="who" id="who"><b id="who-nom"></b><span id="who-fn"></span></div>
+      <div class="user-wrap">
+        <button class="avatar" id="user-btn" aria-label="Compte" aria-haspopup="true" aria-expanded="false" onclick="toggleUser(event)" title="Compte"><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="8.5" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4.5 20.5c1.2-4 4.1-6 7.5-6s6.3 2 7.5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <div class="usermenu" id="usermenu" role="menu" hidden>
+          <div class="um-id"><b id="um-nom"></b><span id="um-fn"></span></div>
+          <button class="um-out" id="um-reset" role="menuitem" onclick="reinitialiserDemo()" hidden>Réinitialiser la démo</button>
+          <div class="um-sep"></div>
+          <button class="um-out" role="menuitem" onclick="seDeconnecter()">Se déconnecter</button>
+        </div>
+      </div>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+</header>
+<main id="main"></main>
+<main id="main"></main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/data.js"></script>
+<script src="js/db.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
