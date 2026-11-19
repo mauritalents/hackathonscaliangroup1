@@ -3,7 +3,7 @@
 -- Rejouable : les tables sont supprimées puis recréées (les données de démonstration sont perdues).
 
 drop view if exists public.event_refs;
-drop table if exists public.brouillons, public.arrivees, public.manager_avis, public.irritant_status, public.events, public.irritants cascade;
+drop table if exists public.ref_content, public.brouillons, public.arrivees, public.manager_avis, public.irritant_status, public.events, public.irritants cascade;
 drop table if exists public.profiles cascade;
 
 -- 1. Profils (un par compte, rôle attribué par l'administrateur) ------------------------
@@ -50,6 +50,10 @@ create table public.events (
   irr text[] not null default '{}', conf boolean not null default false,
   aparte text, live boolean not null default false
 );
+-- Textes et listes de référence (rôles, spécification, journal de l'agent, règles de confiance...), en JSON.
+create table public.ref_content (
+  key text primary key, value jsonb not null, updated_at timestamptz not null default now()
+);
 -- Vue sans contenu des mails : seule source lue par les managers et la direction.
 create view public.event_refs as
   select position, jour, src, ref, irr, live from public.events;
@@ -74,13 +78,14 @@ create table public.arrivees (
   lieu text, materiel text, acces text, updated_at timestamptz not null default now()
 );
 create table public.brouillons (
-  id text primary key, arrivee_id text not null references public.arrivees(id) on delete cascade,
+  id text primary key, position int not null default 0, arrivee_id text not null references public.arrivees(id) on delete cascade,
   destinataire text not null, objet text not null, corps text not null, statut text
 );
 
 -- 4. Sécurité (RLS) ----------------------------------------------------------------------
 alter table public.profiles enable row level security;
 alter table public.irritants enable row level security;
+alter table public.ref_content enable row level security;
 alter table public.events enable row level security;
 alter table public.irritant_status enable row level security;
 alter table public.manager_avis enable row level security;
@@ -94,6 +99,7 @@ revoke update on public.profiles from authenticated;
 grant update (full_name) on public.profiles to authenticated;
 
 -- Référentiel : lisible par tout compte connecté, jamais modifiable depuis le site.
+create policy ref_content_read on public.ref_content for select to authenticated using (true);
 create policy irritants_read on public.irritants for select to authenticated using (true);
 -- Contenu des mails et comptes rendus : collaborateur et HRBP seulement.
 create policy events_read on public.events for select to authenticated using (public.current_app_role() in ('collab','hrbp'));
@@ -122,6 +128,23 @@ create policy arrivees_update on public.arrivees for update to authenticated
 create policy brouillons_read on public.brouillons for select to authenticated using (public.current_app_role() in ('collab','hrbp'));
 create policy brouillons_update on public.brouillons for update to authenticated
   using (public.current_app_role() = 'collab') with check (public.current_app_role() = 'collab');
+
+-- Mode démonstration : session anonyme Supabase, profil choisi depuis l'écran de connexion.
+-- Réservé aux sessions anonymes : un vrai compte ne peut pas changer son profil par ce biais.
+create or replace function public.set_demo_role(r text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if coalesce((auth.jwt()->>'is_anonymous')::boolean, false) is not true then
+    raise exception 'Réservé au mode démonstration';
+  end if;
+  if r not in ('collab','manager','hrbp','dir') then raise exception 'Profil inconnu'; end if;
+  update public.profiles
+     set role = r,
+         full_name = coalesce((select value -> r ->> 0 from public.ref_content where key = 'ident'), full_name)
+   where id = auth.uid();
+end $$;
+revoke all on function public.set_demo_role(text) from public, anon;
+grant execute on function public.set_demo_role(text) to authenticated;
 
 -- 5. Remise à zéro de la démo (HRBP uniquement) ------------------------------------------
 create or replace function public.reset_demo() returns void

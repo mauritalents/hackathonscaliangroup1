@@ -21,6 +21,7 @@ state.avisMgr = {};
 let playTimer = null;
 const timers = [];
 
+function listeFlechee(l) { return l.map(function (x) { return "<li><span>" + esc(x[0]) + "</span><span>" + esc(x[1]) + "</span></li>"; }).join(""); }
 function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function badge(cls, text) { return '<span class="badge ' + cls + '">' + esc(text) + "</span>"; }
 function irrById(id) { return IRRITANTS.find(function (i) { return i.id === id; }); }
@@ -124,13 +125,7 @@ function viewObserver() {
   const filtre = (ecartes || bruit) ? '<p class="note">' + (ecartes ? ecartes + " mail écarté (confidentiel, non analysé). " : "") + (bruit ? bruit + " mails de bruit ignorés." : "") + "</p>" : "";
 
   const trust = '<div class="card trust" style="margin-top:16px"><h3>Règles de confiance</h3><ul class="arrows">' +
-    "<li><span>✓</span><span>Sources lues : la boîte partagée « RH – Administration du personnel » et les comptes rendus, autorisées par Scalian. Le dossier partagé : source à confirmer.</span></li>" +
-    "<li><span>✕</span><span>Jamais de visios, d'enregistrements ni de tickets. Jamais les pièces administratives jointes.</span></li>" +
-    "<li><span>✕</span><span>Un mail confidentiel (santé, conflit, situation personnelle) est écarté sans être analysé.</span></li>" +
-    "<li><span>✕</span><span>Aucun irritant n'est attribué à une personne : le registre décrit des étapes du processus.</span></li>" +
-    "<li><span>✓</span><span>Le collaborateur et le manager concernés voient d'abord l'irritant et peuvent le contester ; le HRBP valide.</span></li>" +
-    "<li><span>✓</span><span>Chaque irritant est une interprétation des signaux, avec ses sources, pas une cause prouvée.</span></li>" +
-    "</ul></div>";
+    listeFlechee(CONFIANCE) + "</ul></div>";
 
   return "<h2>" + (state.role === "collab" ? "Ce que l'assistant repère dans votre activité" : "Fil d'observation : boîte RH et comptes rendus") + "</h2>" + controls +
     '<div class="row c-3-2"><div><div class="feed">' + feed + "</div></div>" +
@@ -311,14 +306,6 @@ function viewSuivre() {
   IRRITANTS.forEach(function (i) { c[state.status[i.id]] += 1; });
   const statuts = Object.keys(c).map(function (k) { return badge(k === "Validé" ? "b-emerald" : k === "Ignoré" ? "b-slate" : "b-amber", k + " : " + c[k]); }).join(" ");
 
-  const INDIC = {
-    arrivee: "Part des arrivants avec poste et accès prêts le premier jour",
-    doc: "Questions « lequel / où est » reçues par mois",
-    questions: "Questions reçues déjà couvertes par la FAQ",
-    actions: "Actions reportées plus de 2 fois",
-    boucle: "Arrivées signalées à temps aux services généraux",
-    pieces: "Renvois de pièces par arrivée",
-  };
   const cards = IRRITANTS.map(function (i) {
     const r = repById(i.reponse);
     return '<div class="card" style="margin:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">' +
@@ -326,7 +313,7 @@ function viewSuivre() {
       '<span class="badge" style="background:' + r.color + ';color:#fff;border-color:transparent">' + esc(r.label) + "</span></div>" +
       '<div class="irrdetail">Irritant d\'origine : ' + esc(i.court) + "</div>" +
       '<table style="margin-top:8px;font-size:12px"><tbody>' +
-      "<tr><td style='padding:3px 8px 3px 0;color:#64748b'>Indicateur</td><td style='padding:3px 0'>" + esc(INDIC[i.id]) + "</td></tr>" +
+      "<tr><td style='padding:3px 8px 3px 0;color:#64748b'>Indicateur</td><td style='padding:3px 0'>" + esc(INDICATEURS[i.id] || "") + "</td></tr>" +
       "<tr><td style='padding:3px 8px 3px 0;color:#64748b'>L'irritant a-t-il disparu ?</td><td style='padding:3px 0' class='tbd'>à mesurer</td></tr>" +
       "<tr><td style='padding:3px 8px 3px 0;color:#64748b'>Données</td><td style='padding:3px 0'>Pas encore en service</td></tr>" +
       "</tbody></table></div>";
@@ -359,7 +346,7 @@ state.lucas = { recu: false, envoyes: {}, infos: { lieu: "", materiel: "", acces
 function role() { return ROLES.find(function (r) { return r.id === state.role; }); }
 function renderWho() {
   let w = IDENT[state.role] || ["", ""];
-  if (DB.enabled && !DB.demo && DB.profile) w = [DB.profile.full_name || DB.profile.email, role().persona];
+  if (DB.enabled && DB.profile) w = [DB.profile.full_name || DB.profile.email, role().persona];
   document.getElementById("who-nom").textContent = w[0];
   document.getElementById("who-fn").textContent = w[1];
   document.getElementById("um-nom").textContent = w[0];
@@ -495,11 +482,7 @@ function viewEquipe() {
   return "<h2>Irritants qui touchent mon équipe</h2>" +
     '<div class="row c-3-2"><div>' + cards + "</div>" +
     '<div><div class="card trust"><h3>Ce que vous voyez, et ce que vous ne voyez pas</h3><ul class="arrows">' +
-      "<li><span>✓</span><span>Les irritants du processus d'intégration dont une étape dépend du manager.</span></li>" +
-      "<li><span>✓</span><span>Votre avis (confirmer ou contester) est transmis au HRBP, qui décide.</span></li>" +
-      "<li><span>✕</span><span>Aucun nom de collègue, aucun mail individuel, aucune comparaison entre managers ou entre équipes.</span></li>" +
-      "<li><span>✕</span><span>Les irritants propres à l'administration du personnel restent visibles par la RH et le HRBP.</span></li>" +
-    "</ul></div></div></div>";
+      listeFlechee(CONFIANCE_MANAGER) + "</ul></div></div></div>";
 }
 
 function viewMesArrivees() {
@@ -541,11 +524,7 @@ function viewFutur() {
   return "<h2>Le futur employé n'utilise pas ACIA</h2>" +
     '<div class="row c-1-2"><div><div class="card"><p style="font-size:14px">Lucas n\'a pas de compte et n\'est pas observé. Ses pièces administratives ne sont jamais lues par l\'IA.</p><p style="font-size:14px;margin-top:8px">Il reçoit seulement les mails préparés par la RH et envoyés par Camille.</p></div></div>' +
     '<div><div class="card preview"><div class="spechead">Le mail de bienvenue qu\'il reçoit</div>' +
-    "<p>Bienvenue Lucas ! Vous arrivez lundi : Isabelle Moreau vous accueille.</p>" +
-    "<p>Votre poste et votre badge seront prêts à votre arrivée.</p>" +
-    "<p>Réponses aux questions fréquentes : télétravail, mutuelle, notes de frais (lien).</p>" +
-    "<p>Tous les documents d'accueil, dans leur version en vigueur, lisibles dès maintenant (lien).</p>" +
-    "<p>Chaque envoi de pièces reçoit une confirmation automatique.</p></div></div></div>";
+    FUTUR_MAIL.map(function (p) { return "<p>" + esc(p) + "</p>"; }).join("") + "</div></div></div>";
 }
 
 // ------------------------------- RENDU --------------------------------------
@@ -558,7 +537,6 @@ function render() {
   state.justAdded = false; state.fresh = null;
 }
 
-render();
 
 
 // ---------------------------------------------------------------------------
@@ -603,8 +581,8 @@ async function ouvrirSession() {
   IRRITANTS.forEach(function (i) { if (!state.status[i.id]) state.status[i.id] = "À valider"; });
   await dbLoadState();
   restaurerEtat();
-  DB.demo = false;
-  document.getElementById("mode-flag").textContent = "Connecté · données partagées";
+  DB.demo = !!(DB.user && DB.user.is_anonymous);
+  document.getElementById("mode-flag").textContent = DB.demo ? "Démonstration · enregistré en base" : "Connecté · données partagées";
   document.getElementById("um-reset").hidden = p.role !== "hrbp";
   afficherApp();
   setRole(ROLES.some(function (r) { return r.id === p.role; }) ? p.role : "collab");
@@ -633,19 +611,21 @@ async function authSubmit() {
 }
 
 // Mode démonstration : aucun compte, rien n'est écrit en base.
-function seConnecter() {
+async function seConnecter() {
   const r = document.getElementById("lg-role").value;
   if (!r) return;
-  DB.demo = true; DB.profile = null;
-  document.getElementById("mode-flag").textContent = "Démonstration · données locales";
-  document.getElementById("um-reset").hidden = false;
-  afficherApp();
-  setRole(r);
+  if (DB.enabled) {
+    // Démonstration enregistrée en base : session anonyme Supabase + profil choisi.
+    const btn = document.getElementById("lg-go"); btn.disabled = true;
+    try { await dbDemoSignIn(r); await ouvrirSession(); }
+    catch (e) { toast("Démonstration impossible : " + e.message, true); btn.disabled = false; }
+    return;
+  }
 }
 
 async function seDeconnecter() {
   closeBento(); closeUser();
-  if (DB.enabled && !DB.demo) await dbSignOut();
+  if (DB.enabled) await dbSignOut();
   // On repart d'un état propre : le plus simple est de recharger la page.
   window.location.reload();
 }
@@ -653,7 +633,7 @@ async function seDeconnecter() {
 async function reinitialiserDemo() {
   closeUser();
   if (!confirm("Remettre la démo à zéro (validations, avis, arrivée de Lucas) ?")) return;
-  if (DB.enabled && !DB.demo) {
+  if (DB.enabled) {
     try { await dbResetDemo(); } catch (e) { toast("Réinitialisation impossible : " + e.message, true); return; }
   }
   window.location.reload();
@@ -668,6 +648,6 @@ if (DB.enabled) {
   });
 } else {
   document.getElementById("lg-auth").hidden = true;
-  document.getElementById("lg-demo-box").hidden = false;
-  document.getElementById("lg-sub").textContent = "Supabase n'est pas encore configuré : mode démonstration uniquement.";
+  document.querySelector(".lg-demo").hidden = true;
+  document.getElementById("lg-sub").textContent = "Supabase n'est pas configuré : renseignez js/config.js (voir GUIDE-DEPLOIEMENT.md). Toutes les données du site sont stockées en base.";
 }

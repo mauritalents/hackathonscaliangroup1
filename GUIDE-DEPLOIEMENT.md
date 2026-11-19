@@ -2,7 +2,7 @@
 
 ## Ce que contient le dossier
 
-1. `index.html`, `css/`, `js/`, `assets/` : le site (issu de la maquette v11).
+1. `index.html`, `css/`, `js/`, `assets/` : le site (issu de la maquette v11). Aucune donnée métier dans le code : tout est chargé depuis Supabase.
 2. `js/config.js` : les deux valeurs Supabase à renseigner.
 3. `supabase/schema.sql` : tables et règles de sécurité. `supabase/seed.sql` : jeu de données fictif. `supabase/roles.sql` : attribution des profils.
 
@@ -16,12 +16,14 @@
 
 1. Menu SQL Editor, New query. Coller tout le contenu de `supabase/schema.sql`, cliquer Run.
 2. Nouvelle requête. Coller `supabase/seed.sql`, Run.
-3. Menu Table Editor : vous devez voir 6 irritants, 25 événements, 1 arrivée, 3 brouillons.
+3. Menu Table Editor : vous devez voir 6 irritants, 25 événements, 1 arrivée, 3 brouillons et 16 lignes dans ref_content (rôles, spécification, règles de confiance...).
+4. Déjà lancé une version précédente ? Ne relancez pas `schema.sql` (il efface les tables) : exécutez seulement `supabase/migration-donnees.sql`.
 
 ## Étape 3. Régler l'authentification
 
 1. Authentication, Sign In / Providers, Email : pour un hackathon, désactiver « Confirm email » (sinon chaque inscrit doit cliquer sur un lien reçu par mail).
-2. Authentication, URL Configuration : renseigner Site URL avec l'adresse GitHub Pages (étape 6). Ajouter aussi `http://localhost:8000` dans les Redirect URLs pour les tests.
+2. Authentication, Sign In / Providers : activer « Allow anonymous sign-ins » (nécessaire pour le mode démonstration enregistré en base).
+3. Authentication, URL Configuration : renseigner Site URL avec l'adresse GitHub Pages (étape 6). Ajouter aussi `http://localhost:8000` dans les Redirect URLs pour les tests.
 
 ## Étape 4. Copier les clés dans le site
 
@@ -81,4 +83,5 @@ Le site se met à jour en 1 à 2 minutes.
 1. Le site et le dépôt sont publics. Le jeu de données est fictif : n'y mettez jamais de vrais mails ou comptes rendus Scalian.
 2. La clé anon est publique par conception. Ce qui protège les données, ce sont les règles RLS de `schema.sql` : ne les désactivez pas.
 3. Un projet Supabase gratuit se met en pause après environ une semaine sans activité : le réveiller depuis le tableau de bord avant une démonstration.
-4. Mode démonstration (lien sous le formulaire de connexion) : sans compte, rien n'est enregistré en base.
+4. Mode démonstration : chacun entre sans compte avec le profil de son choix, et ses actions sont enregistrées dans la base partagée. Toute personne ayant l'adresse du site peut donc modifier les données de démonstration (y compris se donner le profil HRBP), mais pas les profils des vrais comptes. À désactiver après le hackathon (décocher « Allow anonymous sign-ins »).
+5. Chaque entrée en démonstration crée un utilisateur anonyme : nettoyage possible avec la requête en commentaire à la fin de `roles.sql`.

@@ -36,7 +36,7 @@
         <p class="lg-note">Le profil (collaborateur, manager, HRBP, direction) est attribué par l'administrateur du projet.</p>
       </div>
       <div class="lg-demo">
-        <button class="lg-link" type="button" onclick="document.getElementById('lg-demo-box').hidden=!document.getElementById('lg-demo-box').hidden">Mode démonstration (sans compte)</button>
+        <button class="lg-link" type="button" onclick="document.getElementById('lg-demo-box').hidden=!document.getElementById('lg-demo-box').hidden">Mode démonstration (sans compte, enregistré en base)</button>
         <div id="lg-demo-box" hidden>
           <label for="lg-role">Votre profil</label>
           <select id="lg-role" onchange="document.getElementById('lg-go').disabled = !this.value">
@@ -47,7 +47,7 @@
             <option value="dir">Dirigeant · direction d'agence</option>
           </select>
           <button id="lg-go" class="lg-btn" disabled onclick="seConnecter()">Entrer en démonstration</button>
-          <p class="lg-note">Aucune donnée n'est enregistrée en base : tout reste dans votre navigateur. Données fictives. Le futur employé n'a pas d'accès : il reçoit seulement les mails de la RH.</p>
+          <p class="lg-note">Les actions sont enregistrées dans la base partagée du projet (données fictives). Sans configuration Supabase, tout reste dans votre navigateur. Le futur employé n'a pas d'accès : il reçoit seulement les mails de la RH.</p>
         </div>
       </div>
       <div class="lg-edit"><img src="assets/img-d3019cbb.jpg" alt="IAE Paris Sorbonne × neocognition.ai" /></div>

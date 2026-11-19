@@ -25,7 +25,7 @@ function toast(msg, isErr) {
 
 // Lance une écriture en base sans bloquer l'interface ; signale l'erreur à l'utilisateur.
 function dbRun(promise, what) {
-  if (!DB.enabled || DB.demo) return;
+  if (!DB.enabled) return;
   Promise.resolve(promise).then(function (res) {
     if (res && res.error) { console.error(what, res.error); toast("Enregistrement impossible : " + res.error.message, true); }
   });
@@ -41,6 +41,17 @@ async function dbSignUp(email, password, fullName) {
   if (r.error) throw r.error;
   return r.data; // data.session est null si la confirmation par e-mail est activée
 }
+// Mode démonstration : session anonyme Supabase + profil choisi, pour que tout soit enregistré en base.
+async function dbDemoSignIn(roleId) {
+  let r = await DB.client.auth.getSession();
+  if (!r.data.session) {
+    const a = await DB.client.auth.signInAnonymously();
+    if (a.error) throw a.error;
+    DB.user = a.data.user;
+  } else { DB.user = r.data.session.user; }
+  const s = await DB.client.rpc("set_demo_role", { r: roleId });
+  if (s.error) throw s.error;
+}
 async function dbSignOut() { if (DB.enabled) await DB.client.auth.signOut(); DB.user = null; DB.profile = null; }
 
 async function dbLoadProfile() {
@@ -52,30 +63,50 @@ async function dbLoadProfile() {
 
 function replaceContent(target, rows) { target.splice(0, target.length); rows.forEach(function (x) { target.push(x); }); }
 
-// Charge les données de référence. En cas de table vide ou d'erreur, on garde le jeu embarqué (data.js).
+function setContent(target, value) {
+  if (Array.isArray(target)) { target.splice(0, target.length); (value || []).forEach(function (x) { target.push(x); }); }
+  else { Object.keys(target).forEach(function (k) { delete target[k]; }); Object.assign(target, value || {}); }
+}
+
+// Table ref_content : clé SQL -> variable globale déclarée (vide) dans data.js
+function contentTargets() {
+  return { sources: SOURCES, reponses: REPONSES, contre: CONTRE, questions_contre: QUESTIONS_CONTRE,
+    spec_integration: SPEC_INTEGRATION, gen_steps: GEN_STEPS, agent_steps: AGENT_STEPS, roles: ROLES,
+    arrivees_passees: ARRIVEES_PASSEES, ident: IDENT, irr_manager: IRR_MANAGER, indicateurs: INDICATEURS,
+    confiance: CONFIANCE, confiance_manager: CONFIANCE_MANAGER, futur_mail: FUTUR_MAIL };
+}
+
+// Charge toutes les données de référence depuis Supabase (plus aucune donnée métier dans le code).
 async function dbLoadReference() {
   const role = DB.profile.role;
+  const rc = await DB.client.from("ref_content").select("key,value");
+  if (rc.error) throw rc.error;
+  const targets = contentTargets();
+  (rc.data || []).forEach(function (x) {
+    if (x.key === "prompt_gen") PROMPT_GEN = x.value;
+    else if (targets[x.key]) setContent(targets[x.key], x.value);
+  });
+  if (!ROLES.length) throw new Error("Base vide : exécutez supabase/seed.sql (table ref_content).");
+
   const irr = await DB.client.from("irritants").select("*").order("position");
-  if (!irr.error && irr.data && irr.data.length) {
-    replaceContent(IRRITANTS, irr.data.map(function (x) {
-      return { id: x.id, titre: x.titre, court: x.court, signal: x.signal, color: x.color, note: x.note,
-        traitement: x.traitement, reponse: x.reponse, demo: x.demo, proposition: x.proposition, pourquoi: x.pourquoi };
-    }));
-  }
+  if (irr.error) throw irr.error;
+  replaceContent(IRRITANTS, irr.data.map(function (x) {
+    return { id: x.id, titre: x.titre, court: x.court, signal: x.signal, color: x.color, note: x.note,
+      traitement: x.traitement, reponse: x.reponse, demo: x.demo, proposition: x.proposition, pourquoi: x.pourquoi };
+  }));
   const full = (role === "collab" || role === "hrbp");
   // Les managers et la direction ne reçoivent que les références (pas le contenu des mails) : vue event_refs.
   const ev = full
     ? await DB.client.from("events").select("*").order("position")
     : await DB.client.from("event_refs").select("*").order("position");
-  if (!ev.error && ev.data && ev.data.length) {
-    const map = function (x) {
-      return { jour: x.jour, src: x.src, ref: x.ref, de: x.de_nom || undefined, titre: x.titre || "", texte: x.texte || "",
-        irr: x.irr || [], conf: x.conf || undefined, aparte: x.aparte || "", live: x.live || undefined };
-    };
-    replaceContent(EVENTS, ev.data.filter(function (x) { return !x.live; }).map(map));
-    const live = ev.data.filter(function (x) { return x.live; });
-    if (live.length) Object.assign(LIVE_EVENT, map(live[0]));
-  }
+  if (ev.error) throw ev.error;
+  const map = function (x) {
+    return { jour: x.jour, src: x.src, ref: x.ref, de: x.de_nom || undefined, titre: x.titre || "", texte: x.texte || "",
+      irr: x.irr || [], conf: x.conf || undefined, aparte: x.aparte || "", live: x.live || undefined };
+  };
+  replaceContent(EVENTS, ev.data.filter(function (x) { return !x.live; }).map(map));
+  const live = ev.data.filter(function (x) { return x.live; });
+  if (live.length) Object.assign(LIVE_EVENT, map(live[0]));
 }
 
 // Charge l'état partagé (validations, avis, arrivée) et le met dans l'objet state de app.js.
@@ -98,9 +129,10 @@ async function dbLoadState() {
       state.lucas.infos = { lieu: ar.data.lieu || "", materiel: ar.data.materiel || "", acces: ar.data.acces || "" };
     }
     if (role === "collab" || role === "hrbp") {
-      const br = await DB.client.from("brouillons").select("id,statut");
+      const br = await DB.client.from("brouillons").select("id,destinataire,objet,corps,statut,position").order("position");
       if (!br.error) {
         state.lucas.envoyes = {};
+        replaceContent(BROUILLONS, (br.data || []).map(function (x) { return { id: x.id, a: x.destinataire, objet: x.objet, corps: x.corps }; }));
         (br.data || []).forEach(function (x) { if (x.statut) state.lucas.envoyes[x.id] = x.statut; });
       }
     }

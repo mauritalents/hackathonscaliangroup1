@@ -5,3 +5,6 @@ update public.profiles set role = 'collab'  where email = 'camille@exemple.com';
 update public.profiles set role = 'manager' where email = 'isabelle@exemple.com';
 update public.profiles set role = 'dir'     where email = 'direction@exemple.com';
 -- Vérifier : select email, role from public.profiles;
+
+-- Nettoyage des sessions de démonstration anonymes de plus de 7 jours (sans effet sur les vrais comptes).
+-- delete from auth.users where is_anonymous and created_at < now() - interval '7 days';
