@@ -89,3 +89,20 @@ Les données du hackathon sont fictives. Pour de vrais mails Scalian : accord é
 1. Analyse planifiée (toutes les nuits) avec Supabase Cron.
 2. Alimentation automatique : redirection des mails de la boîte RH vers un webhook (Make) qui ajoute les sources en base.
 3. Promotion d'une détection validée en irritant de référence du registre.
+
+## Dépannage : « Failed to send a request to the Edge Function »
+
+Ce message vient du navigateur : il n'a obtenu aucune réponse lisible de la fonction. Il ne dit pas pourquoi. L'onglet Détection IA l'explique désormais lui même : chaque erreur affiche une origine probable et des actions numérotées, et le bouton « Diagnostiquer » teste chaque maillon.
+
+Ordre des vérifications faites par le diagnostic :
+
+1. js/config.js : URL et clé anon renseignées.
+2. Projet Supabase joignable (pas en pause, bonne adresse).
+3. Session réelle (pas la démo) et profil HRBP.
+4. Tables de détection et d'IA présentes (migration-detection.sql puis migration-ia.sql).
+5. Fonction detect-irritants joignable. Si le serveur répond sans en-têtes CORS, la fonction n'est pas déployée sous ce nom exact ou plante au démarrage.
+6. Version de la fonction (2 attendue), secret KEY_ENCRYPTION_SECRET, secrets de clés, clé disponible pour le fournisseur.
+
+Cause la plus fréquente : la fonction n'a pas été déployée. Dans Supabase : Edge Functions, Deploy a new function, nom exact detect-irritants, collez supabase/functions/detect-irritants/index.ts, Deploy. Après chaque modification de index.ts, redéployez : le site ne met pas la fonction à jour tout seul.
+
+Codes d'erreur renvoyés par la fonction : AUTH, ANON, ROLE, TABLES, NO_KEY, NO_MODEL, NO_SECRET, BAD_URL, RATE, NO_SOURCES, BAD_RESPONSE, PROVIDER, INTERNE.

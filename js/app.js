@@ -340,7 +340,7 @@ function viewSuivre() {
 
 
 state.det = { running: false, loaded: false, rows: [], err: "", last: null,
-  ia: { loaded: false, providers: [], provider: "", model: "", baseUrl: "", models: [], status: null, busy: "", msg: "", key: "" } };
+  ia: { loaded: false, providers: [], provider: "", model: "", baseUrl: "", models: [], status: null, statusErr: null, busy: "", msg: "", key: "" }, errObj: null, diag: null };
 state.role = "collab";
 state.tab = "arrivees";
 state.lucas = { recu: false, envoyes: {}, infos: { lieu: "", materiel: "", acces: "" }, complete: false };
@@ -524,9 +524,169 @@ function viewTableau() {
 
 async function chargerDetections() {
   try { state.det.rows = await dbLoadDetections(); state.det.loaded = true; state.det.err = ""; }
-  catch (e) { state.det.err = e.message; }
+  catch (e) { setErr(e); }
   render();
 }
+const FN_VERSION_ATTENDUE = 2;
+function setErr(e) { state.det.err = (e && e.message) || String(e); state.det.errObj = e; }
+
+// Traduit une erreur en origine probable et en actions concrètes.
+function expliquerErreur(e) {
+  const kind = e.kind || "", code = e.code || "", st = e.status || 0, msg = e.message || "";
+  if (kind === "FunctionsFetchError" || /Failed to send a request/i.test(msg)) {
+    return { origine: "Le navigateur n'a obtenu aucune réponse exploitable de la fonction detect-irritants. Le cas le plus fréquent : la fonction n'est pas déployée (ou sous un autre nom). Une fonction absente ou qui plante au démarrage ne renvoie pas les en-têtes CORS, et le navigateur affiche alors ce message.",
+      actions: [
+        "Supabase, Edge Functions : vérifiez que « detect-irritants » existe avec exactement ce nom et qu'elle est active. Sinon : Deploy a new function, Via Editor, collez supabase/functions/detect-irritants/index.ts, Deploy.",
+        "Ouvrez Edge Functions, detect-irritants, Logs : un plantage au démarrage (BOOT_ERROR) y est visible. Redéployez alors le fichier complet.",
+        "Vérifiez que le projet n'est pas en pause (tableau de bord Supabase, bouton Restore) et que SUPABASE_URL dans js/config.js est bien l'adresse de CE projet.",
+        "Testez en navigation privée, sans extension (bloqueur de publicités) et hors réseau d'entreprise ou VPN.",
+        "Cliquez sur « Lancer le diagnostic complet » : il indique l'étape qui échoue."] };
+  }
+  if (kind === "FunctionsRelayError") {
+    return { origine: "Supabase n'a pas réussi à exécuter la fonction (erreur du relais).",
+      actions: ["Attendez une minute si la fonction vient d'être déployée, puis réessayez.", "Consultez Edge Functions, detect-irritants, Logs.", "Redéployez la fonction avec le fichier index.ts complet."] };
+  }
+  if (code === "AUTH" || st === 401) {
+    return { origine: "Votre session n'est pas reconnue par Supabase (expirée, ou clé du projet différente).",
+      actions: ["Déconnectez-vous puis reconnectez-vous.", "Vérifiez que js/config.js contient l'URL et la clé anon du même projet que celui où la fonction est déployée.", "Si vous avez désactivé « Verify JWT » ou changé les clés du projet, redéployez la fonction."] };
+  }
+  if (code === "ANON") return { origine: "Vous êtes en mode démonstration (session anonyme) : la détection IA est volontairement interdite.", actions: ["Déconnectez-vous et connectez-vous avec un vrai compte.", "Donnez-lui le profil HRBP avec supabase/roles.sql."] };
+  if (code === "ROLE") return { origine: "Votre compte n'a pas le profil HRBP.", actions: ["Dans Supabase, SQL Editor : update public.profiles set role = 'hrbp' where email = 'votre@email';", "Déconnectez-vous puis reconnectez-vous."] };
+  if (code === "TABLES") return { origine: "Des tables de la base sont absentes ou illisibles : une migration SQL n'a pas été exécutée.", actions: ["Supabase, SQL Editor : exécutez supabase/migration-detection.sql, puis supabase/migration-ia.sql.", "Relancez le diagnostic : il liste les tables manquantes."] };
+  if (code === "NO_SECRET") return { origine: "Le secret de chiffrement des clés n'existe pas côté serveur.", actions: ["Supabase, Edge Functions, Secrets : ajoutez KEY_ENCRYPTION_SECRET (une longue phrase aléatoire).", "Réessayez. Sinon, n'utilisez pas « Mémoriser » : saisissez la clé à chaque analyse."] };
+  if (code === "NO_KEY") return { origine: "Aucune clé d'API n'est disponible pour ce fournisseur.", actions: ["Collez votre clé dans le champ « Clé d'API » puis relancez.", "Ou cliquez sur « Mémoriser ma clé » / « Définir comme défaut du projet » (secret KEY_ENCRYPTION_SECRET requis).", "Ou ajoutez le secret Supabase <FOURNISSEUR>_API_KEY, par exemple ANTHROPIC_API_KEY."] };
+  if (code === "NO_MODEL") return { origine: "Aucun modèle n'est choisi.", actions: ["Cliquez sur « Charger les modèles » (avec une clé), puis choisissez un modèle dans le champ Modèle.", "Ou saisissez le nom exact du modèle indiqué par le fournisseur."] };
+  if (code === "BAD_URL") return { origine: "L'adresse de l'API est invalide ou refusée.", actions: ["Saisissez une adresse en https avec un nom de domaine public, par exemple https://api.exemple.com/v1.", "Les adresses IP, localhost et les réseaux internes sont refusés."] };
+  if (code === "RATE") return { origine: "Limite de 10 analyses par heure atteinte pour votre compte.", actions: ["Attendez la prochaine heure ou augmentez MAX_RUNS_PER_HOUR en tête de index.ts, puis redéployez."] };
+  if (code === "NO_SOURCES") return { origine: "Il n'y a aucune source à analyser (hors mails confidentiels).", actions: ["Ajoutez un mail ou un compte rendu avec le formulaire, ou exécutez supabase/seed.sql."] };
+  if (code === "BAD_RESPONSE") return { origine: "Le modèle a répondu dans un format inexploitable.", actions: ["Essayez un autre modèle, de préférence un modèle qui gère les appels d'outils (function calling).", "Essayez un autre fournisseur."] };
+  if (code === "PROVIDER") {
+    const h = /\(40[13]\)/.test(msg) ? "Le fournisseur refuse la clé : clé invalide, révoquée, ou sans droit sur ce modèle."
+      : /\((402|429)\)/.test(msg) ? "Le fournisseur signale un quota, une limite de débit ou un crédit épuisé."
+      : /\(404\)/.test(msg) ? "Le modèle demandé n'existe pas chez ce fournisseur, ou n'est pas accessible avec cette clé."
+      : "Le fournisseur d'IA a refusé la requête.";
+    return { origine: h, actions: ["Vérifiez la clé dans la console du fournisseur (active, bon projet, crédit disponible).", "Cliquez sur « Charger les modèles » et choisissez un modèle de la liste.", "Lisez le message du fournisseur ci-dessus : il donne la raison exacte."] };
+  }
+  if (st === 404) return { origine: "Supabase répond que la fonction est introuvable.", actions: ["Déployez la fonction sous le nom exact detect-irritants (Edge Functions, Deploy a new function)."] };
+  if (/BOOT_ERROR|WORKER_LIMIT/i.test(msg) || st === 546 || st === 503) return { origine: "La fonction plante au démarrage ou dépasse ses limites.", actions: ["Ouvrez Edge Functions, detect-irritants, Logs pour lire l'erreur.", "Redéployez le fichier index.ts complet, sans modification."] };
+  return { origine: "Erreur non classée (" + (st ? "HTTP " + st : "sans code") + ").", actions: ["Ouvrez Supabase, Edge Functions, detect-irritants, Logs : l'erreur détaillée y figure.", "Cliquez sur « Lancer le diagnostic complet »."] };
+}
+
+function panneauErreur(e) {
+  const x = expliquerErreur(e);
+  return '<div class="obj" style="margin-top:12px"><b>Erreur :</b> ' + esc(e.message) + (e.code ? ' <span class="note">(code ' + esc(e.code) + ")</span>" : "") + "</div>" +
+    '<div class="obj todo"><b>Origine probable :</b> ' + esc(x.origine) + "</div>" +
+    '<div class="obj ok"><b>Actions pour résoudre :</b><ol class="wf">' +
+      x.actions.map(function (a, i) { return '<li><span class="wnum">' + (i + 1) + "</span><span>" + esc(a) + "</span></li>"; }).join("") + "</ol></div>" +
+    '<div class="btns"><button class="btn ghost" onclick="lancerDiagnostic()">Lancer le diagnostic complet</button></div>';
+}
+
+// Diagnostic pas à pas : configuration, projet, session, tables, fonction, secrets, clé.
+async function lancerDiagnostic() {
+  const d = state.det.diag = { running: true, steps: [], origine: null };
+  state.det.err = ""; state.det.errObj = null; render();
+  const add = function (label, etat, detail, actions) { d.steps.push({ label: label, etat: etat, detail: detail, actions: actions || [] }); };
+  const cfg = window.ACIA_CONFIG || {};
+  let stop = false;
+
+  // 1. Configuration du site
+  if (!DB.enabled) {
+    add("Configuration du site (js/config.js)", "ko", "SUPABASE_URL ou SUPABASE_ANON_KEY n'est pas renseigné, ou le script supabase-js n'a pas chargé.", ["Renseignez js/config.js avec le Project URL et la clé anon, puis publiez (git push).", "Videz le cache du navigateur (Ctrl+F5) après la publication."]);
+    stop = true;
+  } else if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(cfg.SUPABASE_URL)) {
+    add("Configuration du site (js/config.js)", "warn", "L'adresse " + cfg.SUPABASE_URL + " n'a pas la forme https://<projet>.supabase.co.", ["Vérifiez le Project URL dans Supabase, Project Settings, API."]);
+  } else add("Configuration du site (js/config.js)", "ok", cfg.SUPABASE_URL);
+
+  // 2. Projet Supabase joignable
+  if (!stop) {
+    try {
+      const r = await fetch(cfg.SUPABASE_URL.replace(/\/$/, "") + "/auth/v1/health", { headers: { apikey: cfg.SUPABASE_ANON_KEY } });
+      if (r.ok) add("Projet Supabase joignable", "ok", "Le service d'authentification répond.");
+      else { add("Projet Supabase joignable", "ko", "Réponse HTTP " + r.status + ". Clé anon refusée ou projet indisponible.", ["Vérifiez que la clé anon de js/config.js est celle de ce projet.", "Si le projet est en pause : tableau de bord Supabase, Restore project."]); stop = true; }
+    } catch (e) {
+      add("Projet Supabase joignable", "ko", "Aucune réponse du projet depuis ce navigateur.", ["Vérifiez que le projet n'est pas en pause (tableau de bord Supabase, Restore project).", "Vérifiez l'adresse SUPABASE_URL.", "Testez hors VPN ou réseau d'entreprise, sans extension de blocage."]);
+      stop = true;
+    }
+  }
+
+  // 3. Session et profil
+  if (!stop) {
+    if (!DB.user) { add("Session", "ko", "Vous n'êtes pas connecté.", ["Connectez-vous avec un compte HRBP."]); stop = true; }
+    else if (DB.user.is_anonymous) { add("Session", "ko", "Session de démonstration anonyme : la détection IA est interdite.", ["Connectez-vous avec un vrai compte au profil HRBP."]); stop = true; }
+    else add("Session", "ok", "Connecté" + (DB.profile ? ", profil « " + DB.profile.role + " »" : "") + ".");
+  }
+
+  // 4. Tables vues depuis le navigateur
+  if (!stop) {
+    const manquantes = [];
+    for (const t of ["detection_runs", "detections", "ai_providers", "ai_settings"]) {
+      const r = await DB.client.from(t).select("*", { count: "exact", head: true });
+      if (r.error) manquantes.push(t);
+    }
+    if (manquantes.length) add("Tables de la base", "ko", "Absentes ou illisibles : " + manquantes.join(", "), ["Exécutez supabase/migration-detection.sql puis supabase/migration-ia.sql dans le SQL Editor.", "Vérifiez que votre profil est HRBP (ces tables lui sont réservées)."]);
+    else add("Tables de la base", "ok", "Tables de détection et d'IA lisibles.");
+  }
+
+  // 5. Fonction detect-irritants
+  let ping = null;
+  if (!stop) {
+    try {
+      ping = await dbAi("ping");
+      add("Fonction detect-irritants", "ok", "La fonction répond (version " + ping.version + ").");
+    } catch (e) {
+      const x = expliquerErreur(e);
+      if (e.kind === "FunctionsFetchError" || !e.status) {
+        let atteint = false;
+        try { await fetch(cfg.SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/detect-irritants", { method: "POST", mode: "no-cors" }); atteint = true; } catch (x2) { atteint = false; }
+        add("Fonction detect-irritants", "ko", atteint
+          ? "Le serveur de fonctions répond, mais sans en-têtes CORS lisibles : la fonction n'est pas déployée sous le nom exact « detect-irritants », ou elle plante au démarrage."
+          : "Le serveur de fonctions est injoignable depuis ce navigateur (réseau, bloqueur, pare-feu).", x.actions);
+      } else add("Fonction detect-irritants", "ko", e.message, x.actions);
+      stop = true;
+    }
+  }
+
+  // 6. Contenu du ping : version, rôle, secrets, tables côté serveur
+  if (ping) {
+    if (ping.version < FN_VERSION_ATTENDUE) add("Version de la fonction", "ko", "Version " + ping.version + " déployée, version " + FN_VERSION_ATTENDUE + " attendue.", ["Remplacez le code de la fonction par supabase/functions/detect-irritants/index.ts et redéployez."]);
+    else add("Version de la fonction", "ok", "À jour.");
+    if (ping.role !== "hrbp") add("Profil côté serveur", "ko", "Le serveur voit le profil « " + ping.role + " » : HRBP requis.", ["SQL Editor : update public.profiles set role = 'hrbp' where email = 'votre@email';", "Reconnectez-vous."]);
+    else add("Profil côté serveur", "ok", "HRBP.");
+    if (ping.missing_tables.length) add("Tables côté serveur", "ko", "Absentes : " + ping.missing_tables.join(", "), ["Exécutez supabase/migration-detection.sql puis supabase/migration-ia.sql."]);
+    else add("Tables côté serveur", "ok", "Toutes présentes.");
+    add("Secret KEY_ENCRYPTION_SECRET", ping.has_encryption_secret ? "ok" : "warn", ping.has_encryption_secret ? "Défini : les clés peuvent être mémorisées." : "Non défini : « Mémoriser ma clé » et « Définir comme défaut » échoueront.", ping.has_encryption_secret ? [] : ["Edge Functions, Secrets : ajoutez KEY_ENCRYPTION_SECRET."]);
+    add("Secrets de clés d'API", "ok", ping.env_keys.length ? "Disponibles : " + ping.env_keys.join(", ") : "Aucun secret <FOURNISSEUR>_API_KEY défini (facultatif).");
+    // 7. Clé disponible pour le fournisseur choisi
+    try {
+      const st = await dbAi("status", { provider: state.det.ia.provider });
+      const typed = (state.det.ia.key || "").length > 0;
+      const dispo = st.user_key || st.default_key || st.env_key || typed;
+      add("Clé pour « " + state.det.ia.provider + " »", dispo ? "ok" : "warn", dispo ? "Une clé est disponible (" + (typed ? "saisie" : st.user_key ? "personnelle" : st.default_key ? "défaut projet, base" : "défaut projet, secret") + ")." : "Aucune clé disponible pour ce fournisseur.", dispo ? [] : ["Collez votre clé dans le champ « Clé d'API », ou mémorisez-la."]);
+    } catch (e) { /* déjà couvert plus haut */ }
+  }
+
+  const premier = d.steps.find(function (s) { return s.etat === "ko"; }) || d.steps.find(function (s) { return s.etat === "warn"; });
+  d.origine = premier || null;
+  d.running = false;
+  render();
+}
+
+function panneauDiagnostic() {
+  const d = state.det.diag;
+  if (!d) return "";
+  const ic = { ok: "✓", ko: "✕", warn: "!" }, col = { ok: "#047857", ko: "#be123c", warn: "#b45309" };
+  const steps = d.steps.map(function (s) {
+    return '<div class="step ' + (s.etat === "ok" ? "done" : "active") + '" style="opacity:1;' + (s.etat === "ko" ? "border-color:#fecdd3;background:#fff1f2" : s.etat === "warn" ? "border-color:#fde68a;background:#fffbeb" : "") + '">' +
+      '<span class="snum" style="background:' + col[s.etat] + ';color:#fff">' + ic[s.etat] + "</span><div style=\"flex:1;min-width:0\"><div class=\"steptitle\">" + esc(s.label) + '</div><div class="stepsub">' + esc(s.detail) + "</div>" +
+      (s.actions.length ? '<ol class="wf" style="margin-top:6px">' + s.actions.map(function (a, i) { return '<li><span class="wnum">' + (i + 1) + "</span><span>" + esc(a) + "</span></li>"; }).join("") + "</ol>" : "") + "</div></div>";
+  }).join("");
+  const concl = d.running ? '<p class="note">Diagnostic en cours…</p>'
+    : d.origine ? '<div class="obj ' + (d.origine.etat === "ko" ? "" : "todo") + '"><b>Origine du problème :</b> ' + esc(d.origine.label) + " : " + esc(d.origine.detail) + "</div>"
+    : '<div class="result"><b>Tout est en ordre</b><p>Aucun problème détecté : vous pouvez lancer la détection.</p></div>';
+  return '<div class="card" style="margin-bottom:16px"><div class="spechead">Diagnostic</div>' + concl + '<div style="margin-top:10px">' + steps + "</div>" +
+    '<div class="btns"><button class="btn ghost" onclick="state.det.diag=null;render()">Fermer</button><button class="btn ghost" onclick="lancerDiagnostic()">Relancer</button></div></div>';
+}
+
 function lireConfigIa() {
   const g = function (id) { const e = document.getElementById(id); return e ? e.value : ""; };
   const ia = state.det.ia;
@@ -554,13 +714,15 @@ async function chargerIa() {
     ia.baseUrl = (p && p.base_url) || "";
     ia.loaded = true;
     await majStatutCle(true);
-  } catch (e) { state.det.err = e.message; }
+  } catch (e) { setErr(e); }
   render();
 }
+function finMaj(noRender) { if (!noRender) render(); }
 async function majStatutCle(noRender) {
   const ia = state.det.ia;
   ia.status = null;
-  try { ia.status = await dbAi("status", { provider: ia.provider }); } catch (e) { ia.status = null; }
+  try { ia.status = await dbAi("status", { provider: ia.provider }); } catch (e) { ia.status = null; ia.statusErr = e; return finMaj(noRender); }
+  ia.statusErr = null;
   if (!noRender) render();
 }
 async function changerFournisseur() {
@@ -587,7 +749,7 @@ async function actionIa(nom) {
       await dbAi("set_default", cfg); ia.key = ""; ia.msg = "Réglage par défaut du projet enregistré."; await majStatutCle(true);
     }
     memoriserPrefsIa();
-  } catch (e) { state.det.err = e.message; }
+  } catch (e) { setErr(e); }
   ia.busy = ""; render();
 }
 async function lancerDetection() {
@@ -598,7 +760,7 @@ async function lancerDetection() {
   try {
     state.det.last = await dbRunDetection(cfg);
     state.det.rows = await dbLoadDetections(); state.det.loaded = true;
-  } catch (e) { state.det.err = e.message; }
+  } catch (e) { setErr(e); }
   state.det.running = false; render();
 }
 function setDetStatut(id, s) {
@@ -655,7 +817,8 @@ function viewDetection() {
     (D.last.nb_exclus ? " (" + D.last.nb_exclus + " mail confidentiel écarté, jamais envoyé à l'IA)" : "") +
     (D.last.provider ? " ; fournisseur " + esc(D.last.provider) + ", modèle " + esc(D.last.model) + ", clé : " + esc(D.last.key_source) : "") +
     (D.last.nb_rejetes ? " ; " + D.last.nb_rejetes + " rejeté(s) faute de source valide" : "") + ".</p></div>" : "";
-  const err = D.err ? '<div class="obj" style="margin-top:12px"><b>Erreur :</b> ' + esc(D.err) + "</div>" : "";
+  const errObj = D.err ? (D.errObj || { message: D.err }) : (D.ia.statusErr || null);
+  const err = errObj ? panneauErreur(errObj) : "";
   const aide = bloque ? '<div class="obj todo" style="margin-bottom:12px">La détection IA appelle une API payante : elle est réservée aux comptes réels avec le profil HRBP, pas à la démonstration.</div>' : "";
 
   const empty = !ids.length ? '<div class="empty"><div class="big">🔎</div><p>Aucune analyse pour l\'instant. L\'agent lit les mails et comptes rendus de la base, repère les irritants du processus et propose la réponse la plus simple. Vous validez.</p></div>' : "";
@@ -698,8 +861,9 @@ function viewDetection() {
   return "<h2>Détection IA des irritants</h2>" + aide +
     '<div class="controls"><button class="btn slim" onclick="lancerDetection()"' + ((D.running || bloque) ? " disabled" : "") + ">" +
       (D.running ? "Analyse en cours…" : "Lancer la détection") + "</button>" +
-      '<button class="ctl" onclick="chargerDetections()"' + (bloque ? " disabled" : "") + ">Actualiser</button></div>" +
-    last + err +
+      '<button class="ctl" onclick="chargerDetections()"' + (bloque ? " disabled" : "") + ">Actualiser</button>" +
+      '<button class="ctl" onclick="lancerDiagnostic()"' + (bloque ? " disabled" : "") + ">Diagnostiquer</button></div>" +
+    last + err + panneauDiagnostic() +
     '<div class="row c-3-2"><div style="margin-top:8px">' + (bloque ? "" : iaCard) + (cards || empty) + "</div><div>" + form +
     '<div class="card trust" style="margin-top:16px"><h3>Garde-fous</h3><ul class="arrows">' +
       "<li><span>✓</span><span>Les clés ne sont jamais dans le site ni dans GitHub : saisie unique, base chiffrée ou secret Supabase.</span></li>" +

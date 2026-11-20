@@ -66,15 +66,17 @@ const TOOL = {
 
 const cut = (s: unknown, n: number) => String(s ?? "").slice(0, n);
 
+const FN_VERSION = 2; // incrémenté à chaque évolution ; le site compare avec la version qu'il attend
+
 class ApiError extends Error {
-  status: number;
-  constructor(message: string, status = 500) { super(message); this.status = status; }
+  status: number; code: string;
+  constructor(message: string, status = 500, code = "ERREUR") { super(message); this.status = status; this.code = code; }
 }
 
 // ---- Chiffrement des clés mémorisées (AES-GCM, clé dérivée de KEY_ENCRYPTION_SECRET) -------------
 async function aesKey(): Promise<CryptoKey> {
   const secret = Deno.env.get("KEY_ENCRYPTION_SECRET");
-  if (!secret) throw new ApiError("KEY_ENCRYPTION_SECRET n'est pas défini dans les secrets Supabase : impossible de mémoriser une clé.", 500);
+  if (!secret) throw new ApiError("KEY_ENCRYPTION_SECRET n'est pas défini dans les secrets Supabase : impossible de mémoriser une clé.", 500, "NO_SECRET");
   const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
   return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
@@ -95,11 +97,11 @@ async function decrypt(ciphertext: string, iv: string): Promise<string | null> {
 // Adresse personnalisée : https uniquement, pas de localhost ni d'adresse IP (protection contre les appels internes).
 function safeBaseUrl(raw: string): string {
   let u: URL;
-  try { u = new URL(raw); } catch { throw new ApiError("Adresse de l'API invalide.", 400); }
+  try { u = new URL(raw); } catch { throw new ApiError("Adresse de l'API invalide.", 400, "BAD_URL"); }
   const h = u.hostname.toLowerCase();
   const isIp = /^[0-9.]+$/.test(h) || h.includes(":");
   if (u.protocol !== "https:" || isIp || h === "localhost" || h.endsWith(".local") || h.endsWith(".internal") || !h.includes(".")) {
-    throw new ApiError("Adresse refusée : https et nom de domaine public obligatoires (pas d'IP, pas de localhost).", 400);
+    throw new ApiError("Adresse refusée : https et nom de domaine public obligatoires (pas d'IP, pas de localhost).", 400, "BAD_URL");
   }
   return u.toString().replace(/\/+$/, "");
 }
@@ -117,7 +119,7 @@ async function listModels(p: Provider, base: string, key: string): Promise<strin
     ? await fetch(`${base}/v1/models?limit=100`, { headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } })
     : await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` } });
   const out = await readJson(res);
-  if (!res.ok) throw new ApiError(`${p.label} (${res.status}) : ${errMsg(out)}`, 502);
+  if (!res.ok) throw new ApiError(`${p.label} (${res.status}) : ${errMsg(out)}`, 502, "PROVIDER");
   const list = (out.data ?? out.models ?? []) as { id?: string; name?: string }[];
   return list.map((m) => String(m.id ?? m.name ?? "").replace(/^models\//, "")).filter(Boolean).sort();
 }
@@ -141,7 +143,7 @@ async function callModel(p: Provider, base: string, key: string, model: string, 
       }),
     });
     const out = await readJson(res);
-    if (!res.ok) throw new ApiError(`${p.label} (${res.status}) : ${errMsg(out)}`, 502);
+    if (!res.ok) throw new ApiError(`${p.label} (${res.status}) : ${errMsg(out)}`, 502, "PROVIDER");
     const block = (out.content ?? []).find((b: { type: string }) => b.type === "tool_use");
     return block?.input;
   }
@@ -162,7 +164,7 @@ async function callModel(p: Provider, base: string, key: string, model: string, 
     out = await readJson(res);
     if (res.ok || (res.status !== 400 && res.status !== 422) || !choice) break;
   }
-  if (!res!.ok) throw new ApiError(`${p.label} (${res!.status}) : ${errMsg(out)}`, 502);
+  if (!res!.ok) throw new ApiError(`${p.label} (${res!.status}) : ${errMsg(out)}`, 502, "PROVIDER");
   const msg = out?.choices?.[0]?.message;
   const args = msg?.tool_calls?.[0]?.function?.arguments;
   if (args) { try { return typeof args === "string" ? JSON.parse(args) : args; } catch { /* repli sur le contenu texte */ } }
@@ -182,25 +184,41 @@ Deno.serve(async (req) => {
     // 1. Qui appelle ? Un compte réel avec le profil HRBP, jamais une session de démonstration anonyme.
     const userClient = createClient(url, anon, { global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } } });
     const { data: u, error: ue } = await userClient.auth.getUser();
-    if (ue || !u?.user) return json({ error: "Non authentifié." }, 401);
-    if (u.user.is_anonymous) return json({ error: "La détection IA est réservée aux comptes réels (pas à la démonstration)." }, 403);
+    if (ue || !u?.user) return json({ error: "Non authentifié : reconnectez-vous.", code: "AUTH" }, 401);
     const { data: prof } = await userClient.from("profiles").select("role").eq("id", u.user.id).single();
-    if (prof?.role !== "hrbp") return json({ error: "La détection IA est réservée au HRBP." }, 403);
-    const uid = u.user.id;
     const admin = createClient(url, service);
+
+    // Action de diagnostic : répond à tout compte connecté, avant les contrôles de rôle.
+    if (action === "ping") {
+      const tables = ["profiles", "irritants", "events", "detection_runs", "detections", "ai_providers", "ai_settings", "ai_user_keys", "ai_default_keys"];
+      const missing: string[] = [];
+      for (const t of tables) {
+        const { error } = await admin.from(t).select("*", { count: "exact", head: true });
+        if (error) missing.push(t);
+      }
+      const { data: provs } = await admin.from("ai_providers").select("id");
+      const envKeys = (provs ?? []).map((x: { id: string }) => x.id).filter((id: string) => !!Deno.env.get(id.toUpperCase() + "_API_KEY"));
+      return json({ ok: true, version: FN_VERSION, role: prof?.role ?? null, anonymous: !!u.user.is_anonymous,
+        has_encryption_secret: !!Deno.env.get("KEY_ENCRYPTION_SECRET"), env_keys: envKeys, missing_tables: missing });
+    }
+
+    if (u.user.is_anonymous) return json({ error: "La détection IA est réservée aux comptes réels (pas à la démonstration).", code: "ANON" }, 403);
+    if (prof?.role !== "hrbp") return json({ error: "La détection IA est réservée au HRBP.", code: "ROLE" }, 403);
+    const uid = u.user.id;
 
     // 2. Fournisseur choisi
     const providerId = String(body.provider ?? "");
-    const { data: prow } = await admin.from("ai_providers").select("id,label,kind,base_url,default_model").eq("id", providerId).eq("enabled", true).maybeSingle();
-    if (!prow) return json({ error: "Fournisseur d'IA inconnu ou désactivé." }, 400);
+    const { data: prow, error: pe } = await admin.from("ai_providers").select("id,label,kind,base_url,default_model").eq("id", providerId).eq("enabled", true).maybeSingle();
+    if (pe) return json({ error: "Tables IA absentes ou illisibles (" + pe.message + ") : exécutez supabase/migration-ia.sql.", code: "TABLES" }, 500);
+    if (!prow) return json({ error: "Fournisseur d'IA inconnu ou désactivé.", code: "PROVIDER_INCONNU" }, 400);
     const provider = prow as Provider;
     let base = provider.base_url ? provider.base_url.replace(/\/+$/, "") : "";
     if (providerId === "custom") {
       const raw = String(body.base_url ?? "").trim() || base;
-      if (!raw) return json({ error: "Renseignez l'adresse de l'API (https://...)." }, 400);
+      if (!raw) return json({ error: "Renseignez l'adresse de l'API (https://...).", code: "BAD_URL" }, 400);
       base = safeBaseUrl(raw);
     }
-    if (!base) return json({ error: "Adresse de l'API manquante pour ce fournisseur." }, 500);
+    if (!base) return json({ error: "Adresse de l'API manquante pour ce fournisseur.", code: "BAD_URL" }, 500);
 
     // 3. Recherche de la clé : saisie > personnelle > défaut projet (base) > secret Supabase
     const resolveKey = async (typed: string): Promise<{ key: string; source: string } | null> => {
@@ -253,31 +271,31 @@ Deno.serve(async (req) => {
     }
     if (action === "models") {
       const k = await resolveKey(String(body.api_key ?? ""));
-      if (!k) return json({ error: "Aucune clé disponible pour ce fournisseur : saisissez-en une." }, 400);
+      if (!k) return json({ error: "Aucune clé disponible pour ce fournisseur : saisissez-en une.", code: "NO_KEY" }, 400);
       return json({ models: await listModels(provider, base, k.key), key_source: k.source });
     }
     if (action !== "detect") return json({ error: "Action inconnue." }, 400);
 
     // ---- Détection ---------------------------------------------------------------------------------
     const model = cut(body.model, 120).trim() || provider.default_model || "";
-    if (!model) return json({ error: "Choisissez un modèle (bouton « Charger les modèles »)." }, 400);
+    if (!model) return json({ error: "Choisissez un modèle (bouton « Charger les modèles »).", code: "NO_MODEL" }, 400);
     const k = await resolveKey(String(body.api_key ?? ""));
-    if (!k) return json({ error: `Aucune clé d'API pour ${provider.label} : saisissez-en une, ou demandez à un HRBP de définir la clé par défaut.` }, 400);
+    if (!k) return json({ error: `Aucune clé d'API pour ${provider.label} : saisissez-en une, ou demandez à un HRBP de définir la clé par défaut.`, code: "NO_KEY" }, 400);
 
     // Garde-fou de coût
     const since = new Date(Date.now() - 3600_000).toISOString();
     const { count } = await admin.from("detection_runs").select("id", { count: "exact", head: true })
       .eq("created_by", uid).gte("created_at", since);
-    if ((count ?? 0) >= MAX_RUNS_PER_HOUR) return json({ error: `Limite atteinte : ${MAX_RUNS_PER_HOUR} analyses par heure.` }, 429);
+    if ((count ?? 0) >= MAX_RUNS_PER_HOUR) return json({ error: `Limite atteinte : ${MAX_RUNS_PER_HOUR} analyses par heure.`, code: "RATE" }, 429);
 
     // Sources lues avec les droits de l'utilisateur. Les mails confidentiels ne sont jamais envoyés.
     const { data: evs, error: ee } = await userClient.from("events")
       .select("position,ref,jour,src,de_nom,titre,texte,conf").order("position");
-    if (ee) return json({ error: "Lecture des sources impossible : " + ee.message }, 500);
+    if (ee) return json({ error: "Lecture des sources impossible : " + ee.message, code: "TABLES" }, 500);
     const all = evs ?? [];
     const usable = all.filter((e) => !e.conf).slice(-MAX_EVENTS);
     const excluded = all.length - all.filter((e) => !e.conf).length;
-    if (!usable.length) return json({ error: "Aucune source à analyser." }, 400);
+    if (!usable.length) return json({ error: "Aucune source à analyser.", code: "NO_SOURCES" }, 400);
     const { data: known } = await userClient.from("irritants").select("id,court");
 
     // Seul le rôle de l'expéditeur est transmis, pas son nom.
@@ -289,7 +307,7 @@ Deno.serve(async (req) => {
     const userMsg = `Irritants déjà connus (pour renseigner existant_id) :\n${knownTxt}\n\nSources à analyser :\n\n${corpus}`;
 
     const parsed = await callModel(provider, base, k.key, model, userMsg) as { resume?: string; irritants?: Record<string, unknown>[] } | null;
-    if (!parsed || !Array.isArray(parsed.irritants)) return json({ error: "Réponse de l'IA inexploitable (essayez un autre modèle)." }, 502);
+    if (!parsed || !Array.isArray(parsed.irritants)) return json({ error: "Réponse de l'IA inexploitable (essayez un autre modèle).", code: "BAD_RESPONSE" }, 502);
 
     // Contrôle : on écarte tout irritant dont les sources citées n'existent pas (anti invention).
     const refs = new Set(usable.map((e) => e.ref));
@@ -311,15 +329,15 @@ Deno.serve(async (req) => {
     const { data: run, error: re } = await admin.from("detection_runs")
       .insert({ created_by: uid, model, provider: providerId, nb_events: usable.length, resume: cut(parsed.resume, 800) })
       .select("id").single();
-    if (re) return json({ error: "Enregistrement impossible : " + re.message }, 500);
+    if (re) return json({ error: "Enregistrement impossible : " + re.message, code: "TABLES" }, 500);
     if (rows.length) {
       const { error: de } = await admin.from("detections").insert(rows.map((r) => ({ ...r, run_id: run.id })));
-      if (de) return json({ error: "Enregistrement impossible : " + de.message }, 500);
+      if (de) return json({ error: "Enregistrement impossible : " + de.message, code: "TABLES" }, 500);
     }
     return json({ run_id: run.id, nb_sources: usable.length, nb_exclus: excluded, nb_irritants: rows.length, nb_rejetes: rejected,
       provider: provider.label, model, key_source: k.source });
   } catch (e) {
-    if (e instanceof ApiError) return json({ error: e.message }, e.status);
-    return json({ error: "Erreur interne : " + (e instanceof Error ? e.message : String(e)) }, 500);
+    if (e instanceof ApiError) return json({ error: e.message, code: e.code }, e.status);
+    return json({ error: "Erreur interne : " + (e instanceof Error ? e.message : String(e)), code: "INTERNE" }, 500);
   }
 });

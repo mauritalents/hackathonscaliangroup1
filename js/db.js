@@ -158,14 +158,23 @@ async function dbResetDemo() {
 
 // ---- Agent de détection IA --------------------------------------------------------------
 // La clé de l'API IA n'est jamais dans le navigateur : on appelle la fonction Supabase detect-irritants.
+// Appel de la fonction. En cas d'échec, l'erreur porte : kind (type d'erreur Supabase), status (HTTP) et code (code métier de la fonction).
 async function dbAi(action, payload) {
   const r = await DB.client.functions.invoke("detect-irritants", { body: Object.assign({ action: action }, payload || {}) });
   if (r.error) {
-    let msg = r.error.message;
-    try { const j = await r.error.context.json(); if (j && j.error) msg = j.error; } catch (e) { /* message générique */ }
-    throw new Error(msg);
+    const e = new Error(r.error.message);
+    e.kind = r.error.name || "";
+    const ctx = r.error.context;
+    if (ctx && ctx.status) e.status = ctx.status;
+    try {
+      const j = await ctx.json();
+      const m = j && (j.error || j.message || j.msg);
+      if (m) e.message = m;
+      if (j && j.code && typeof j.code === "string") e.code = j.code;
+    } catch (x) { /* corps non JSON : on garde le message générique */ }
+    throw e;
   }
-  if (r.data && r.data.error) throw new Error(r.data.error);
+  if (r.data && r.data.error) { const e = new Error(r.data.error); e.code = r.data.code; throw e; }
   return r.data;
 }
 async function dbRunDetection(cfg) { return dbAi("detect", cfg); }
