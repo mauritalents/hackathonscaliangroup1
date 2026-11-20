@@ -527,7 +527,7 @@ async function chargerDetections() {
   catch (e) { setErr(e); }
   render();
 }
-const FN_VERSION_ATTENDUE = 2;
+const FN_VERSION_ATTENDUE = 3;
 function setErr(e) { state.det.err = (e && e.message) || String(e); state.det.errObj = e; }
 
 // Traduit une erreur en origine probable et en actions concrètes.

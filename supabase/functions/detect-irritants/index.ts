@@ -66,7 +66,7 @@ const TOOL = {
 
 const cut = (s: unknown, n: number) => String(s ?? "").slice(0, n);
 
-const FN_VERSION = 2; // incrémenté à chaque évolution ; le site compare avec la version qu'il attend
+const FN_VERSION = 3; // incrémenté à chaque évolution ; le site compare avec la version qu'il attend
 
 class ApiError extends Error {
   status: number; code: string;
@@ -133,19 +133,28 @@ function extractJson(text: string) {
 
 async function callModel(p: Provider, base: string, key: string, model: string, userMsg: string) {
   if (p.kind === "anthropic") {
-    const res = await fetch(`${base}/v1/messages`, {
-      method: "POST",
-      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({
-        model, max_tokens: 4000, system: SYSTEM,
-        tools: [TOOL], tool_choice: { type: "tool", name: TOOL.name },
-        messages: [{ role: "user", content: userMsg }],
-      }),
-    });
-    const out = await readJson(res);
-    if (!res.ok) throw new ApiError(`${p.label} (${res.status}) : ${errMsg(out)}`, 502, "PROVIDER");
-    const block = (out.content ?? []).find((b: { type: string }) => b.type === "tool_use");
-    return block?.input;
+    // 1er essai : outil forcé. Certains modèles (réflexion étendue, versions récentes) refusent tool_choice : 2e essai en automatique.
+    const msg = userMsg + "\n\nAppelle l'outil fourni. Si tu ne peux pas, réponds uniquement par un objet JSON {\"resume\": ..., \"irritants\": [...]} avec les mêmes champs.";
+    let res: Response, out: any;
+    for (const choice of [{ type: "tool", name: TOOL.name }, undefined]) {
+      res = await fetch(`${base}/v1/messages`, {
+        method: "POST",
+        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({
+          model, max_tokens: 4000, system: SYSTEM,
+          tools: [TOOL], ...(choice ? { tool_choice: choice } : {}),
+          messages: [{ role: "user", content: msg }],
+        }),
+      });
+      out = await readJson(res);
+      if (res.ok || !choice || res.status !== 400 || !/tool_choice|tool choice/i.test(errMsg(out))) break;
+    }
+    if (!res!.ok) throw new ApiError(`${p.label} (${res!.status}) : ${errMsg(out)}`, 502, "PROVIDER");
+    const blocks = (out.content ?? []) as { type: string; input?: unknown; text?: string }[];
+    const block = blocks.find((x) => x.type === "tool_use");
+    if (block?.input) return block.input;
+    const txt = blocks.filter((x) => x.type === "text").map((x) => x.text ?? "").join("\n");
+    return extractJson(txt);
   }
   // Fournisseurs compatibles OpenAI (chat/completions + appel d'outil)
   const tool = { type: "function", function: { name: TOOL.name, description: TOOL.description, parameters: TOOL.input_schema } };

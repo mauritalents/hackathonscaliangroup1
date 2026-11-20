@@ -101,7 +101,7 @@ Ordre des vérifications faites par le diagnostic :
 3. Session réelle (pas la démo) et profil HRBP.
 4. Tables de détection et d'IA présentes (migration-detection.sql puis migration-ia.sql).
 5. Fonction detect-irritants joignable. Si le serveur répond sans en-têtes CORS, la fonction n'est pas déployée sous ce nom exact ou plante au démarrage.
-6. Version de la fonction (2 attendue), secret KEY_ENCRYPTION_SECRET, secrets de clés, clé disponible pour le fournisseur.
+6. Version de la fonction (3 attendue), secret KEY_ENCRYPTION_SECRET, secrets de clés, clé disponible pour le fournisseur.
 
 Cause la plus fréquente : la fonction n'a pas été déployée. Dans Supabase : Edge Functions, Deploy a new function, nom exact detect-irritants, collez supabase/functions/detect-irritants/index.ts, Deploy. Après chaque modification de index.ts, redéployez : le site ne met pas la fonction à jour tout seul.
 
