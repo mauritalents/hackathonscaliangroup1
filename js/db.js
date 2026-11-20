@@ -155,3 +155,46 @@ async function dbResetDemo() {
   const r = await DB.client.rpc("reset_demo");
   if (r.error) throw r.error;
 }
+
+// ---- Agent de détection IA --------------------------------------------------------------
+// La clé de l'API IA n'est jamais dans le navigateur : on appelle la fonction Supabase detect-irritants.
+async function dbAi(action, payload) {
+  const r = await DB.client.functions.invoke("detect-irritants", { body: Object.assign({ action: action }, payload || {}) });
+  if (r.error) {
+    let msg = r.error.message;
+    try { const j = await r.error.context.json(); if (j && j.error) msg = j.error; } catch (e) { /* message générique */ }
+    throw new Error(msg);
+  }
+  if (r.data && r.data.error) throw new Error(r.data.error);
+  return r.data;
+}
+async function dbRunDetection(cfg) { return dbAi("detect", cfg); }
+async function dbLoadAiConfig() {
+  const p = await DB.client.from("ai_providers").select("id,label,kind,base_url,default_model,key_hint,position").eq("enabled", true).order("position");
+  if (p.error) throw p.error;
+  const st = await DB.client.from("ai_settings").select("default_provider").eq("id", 1).maybeSingle();
+  return { providers: p.data || [], defaultProvider: st.data ? st.data.default_provider : null };
+}
+async function dbLoadDetections() {
+  const r = await DB.client.from("detections").select("*, detection_runs(created_at,model,resume,nb_events)").order("created_at", { ascending: false }).limit(60);
+  if (r.error) throw r.error;
+  return r.data || [];
+}
+function dbSetDetStatut(id, statut) {
+  dbRun(DB.client.from("detections").update({ statut: statut }).eq("id", id), "detection");
+}
+// Ajoute une source (mail ou compte rendu) lue ensuite par l'agent.
+async function dbAddEvent(e) {
+  const mx = await DB.client.from("events").select("position").eq("live", false).order("position", { ascending: false }).limit(1);
+  if (mx.error) throw mx.error;
+  const pos = (mx.data && mx.data[0] ? mx.data[0].position : -1) + 1;
+  const nums = EVENTS.concat([LIVE_EVENT]).filter(function (x) { return x.src === e.src; })
+    .map(function (x) { return parseInt(String(x.ref).replace(/\D/g, ""), 10) || 0; });
+  const ref = (e.src === "mail" ? "Mail " : "CR-") + (Math.max.apply(null, nums.concat([0])) + 1);
+  const jour = new Date().toLocaleDateString("fr-FR");
+  const row = { position: pos, jour: jour, src: e.src, ref: ref, de_nom: e.de || null, titre: e.titre, texte: e.texte,
+    irr: [], conf: !!e.conf, aparte: e.conf ? "Classé confidentiel : contenu non analysé." : "", live: false };
+  const r = await DB.client.from("events").insert(row);
+  if (r.error) throw r.error;
+  return { jour: jour, src: e.src, ref: ref, de: row.de_nom || undefined, titre: e.titre, texte: e.texte, irr: [], conf: row.conf || undefined, aparte: row.aparte };
+}

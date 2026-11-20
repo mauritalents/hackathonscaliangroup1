@@ -306,3 +306,5 @@
 .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--dark); color:#fff; padding:10px 16px; border-radius:8px; font-size:13px; z-index:200; box-shadow:0 8px 24px rgba(20,8,50,.3); }
 .toast.err { background:#be123c; }
 .um-sep { border-top:1px solid var(--line); margin:6px 0; }
+
+label.fl textarea { display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 14px; font-weight: 400; padding: 8px 10px; border: 1px solid var(--lav2); border-radius: 4px; color: var(--ink); background: #fff; resize: vertical; }

@@ -3,6 +3,8 @@
 -- Rejouable : les tables sont supprimées puis recréées (les données de démonstration sont perdues).
 
 drop view if exists public.event_refs;
+drop table if exists public.ai_default_keys, public.ai_user_keys, public.ai_settings, public.ai_providers;
+drop table if exists public.detections, public.detection_runs;
 drop table if exists public.ref_content, public.brouillons, public.arrivees, public.manager_avis, public.irritant_status, public.events, public.irritants cascade;
 drop table if exists public.profiles cascade;
 
@@ -158,3 +160,98 @@ begin
 end $$;
 revoke all on function public.reset_demo() from public, anon;
 grant execute on function public.reset_demo() to authenticated;
+
+-- 6. Agent de détection IA
+-- Agent de détection IA : analyses (detection_runs) et irritants proposés (detections).
+-- Ces deux tables sont écrites uniquement par la fonction detect-irritants (clé service_role côté serveur).
+create table if not exists public.detection_runs (
+  id uuid primary key default gen_random_uuid(),
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  model text, nb_events int, resume text
+);
+create table if not exists public.detections (
+  id uuid primary key default gen_random_uuid(),
+  run_id uuid not null references public.detection_runs(id) on delete cascade,
+  titre text not null, court text, signal text,
+  sources text[] not null default '{}',
+  reponse text, proposition text, pourquoi text, confiance text, existant_id text,
+  statut text not null default 'À valider' check (statut in ('À valider','Validé','Ignoré')),
+  created_at timestamptz not null default now()
+);
+alter table public.detection_runs enable row level security;
+alter table public.detections enable row level security;
+
+drop policy if exists runs_read on public.detection_runs;
+create policy runs_read on public.detection_runs for select to authenticated using (public.current_app_role() in ('collab','hrbp'));
+drop policy if exists detections_read on public.detections;
+create policy detections_read on public.detections for select to authenticated using (public.current_app_role() in ('collab','hrbp'));
+drop policy if exists detections_update on public.detections;
+create policy detections_update on public.detections for update to authenticated
+  using (public.current_app_role() = 'hrbp') with check (public.current_app_role() = 'hrbp');
+revoke update on public.detections from authenticated;
+grant update (statut) on public.detections to authenticated;
+
+-- Ajout de sources (mails, comptes rendus) depuis le site par la RH et le HRBP.
+drop policy if exists events_insert on public.events;
+create policy events_insert on public.events for insert to authenticated
+  with check (public.current_app_role() in ('collab','hrbp') and live = false);
+
+-- Onglet « Détection IA » pour le HRBP (idempotent).
+update public.ref_content
+   set value = (select jsonb_agg(case when e ->> 'id' = 'hrbp' then jsonb_set(e, '{tabs}', (e -> 'tabs') || '[["detection","Détection IA"]]'::jsonb) else e end)
+                  from jsonb_array_elements(value) e),
+       updated_at = now()
+ where key = 'roles' and value::text not like '%"detection"%';
+
+-- 7. Multi fournisseurs d'IA
+-- Fournisseurs d'IA, réglages par défaut et clés chiffrées.
+create table if not exists public.ai_providers (
+  id text primary key, label text not null,
+  kind text not null check (kind in ('anthropic','openai')),
+  base_url text, default_model text, key_hint text,
+  position int not null default 0, enabled boolean not null default true
+);
+create table if not exists public.ai_settings (
+  id int primary key default 1 check (id = 1),
+  default_provider text references public.ai_providers(id),
+  updated_at timestamptz not null default now()
+);
+-- Clés : chiffrées (AES-GCM) par la fonction detect-irritants. Aucune règle d'accès : seul le serveur y touche.
+create table if not exists public.ai_user_keys (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  provider text not null references public.ai_providers(id) on delete cascade,
+  ciphertext text not null, iv text not null, updated_at timestamptz not null default now(),
+  primary key (user_id, provider)
+);
+create table if not exists public.ai_default_keys (
+  provider text primary key references public.ai_providers(id) on delete cascade,
+  ciphertext text not null, iv text not null,
+  updated_by uuid references auth.users(id) on delete set null, updated_at timestamptz not null default now()
+);
+alter table public.detection_runs add column if not exists provider text;
+
+alter table public.ai_providers enable row level security;
+alter table public.ai_settings enable row level security;
+alter table public.ai_user_keys enable row level security;
+alter table public.ai_default_keys enable row level security;
+revoke all on public.ai_user_keys, public.ai_default_keys from anon, authenticated;
+drop policy if exists ai_providers_read on public.ai_providers;
+create policy ai_providers_read on public.ai_providers for select to authenticated using (public.current_app_role() = 'hrbp');
+drop policy if exists ai_settings_read on public.ai_settings;
+create policy ai_settings_read on public.ai_settings for select to authenticated using (public.current_app_role() = 'hrbp');
+
+-- Catalogue. Les adresses sont celles des API publiques ; les modèles se choisissent dans le site (bouton « Charger les modèles »).
+insert into public.ai_providers (id,label,kind,base_url,default_model,key_hint,position) values
+ ('anthropic','Anthropic (Claude)','anthropic','https://api.anthropic.com','claude-sonnet-5-5','sk-ant-...',0),
+ ('openai','OpenAI','openai','https://api.openai.com/v1',null,'sk-...',1),
+ ('gemini','Google Gemini','openai','https://generativelanguage.googleapis.com/v1beta/openai',null,'AIza...',2),
+ ('mistral','Mistral AI','openai','https://api.mistral.ai/v1',null,null,3),
+ ('groq','Groq','openai','https://api.groq.com/openai/v1',null,'gsk_...',4),
+ ('deepseek','DeepSeek','openai','https://api.deepseek.com',null,'sk-...',5),
+ ('xai','xAI (Grok)','openai','https://api.x.ai/v1',null,'xai-...',6),
+ ('openrouter','OpenRouter (multi modèles)','openai','https://openrouter.ai/api/v1',null,'sk-or-...',7),
+ ('together','Together AI','openai','https://api.together.xyz/v1',null,null,8),
+ ('custom','Autre API compatible OpenAI (adresse à saisir)','openai',null,null,null,9)
+on conflict (id) do nothing;
+insert into public.ai_settings (id, default_provider) values (1, 'anthropic') on conflict (id) do nothing;

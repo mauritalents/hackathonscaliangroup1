@@ -26,7 +26,7 @@ function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").
 function badge(cls, text) { return '<span class="badge ' + cls + '">' + esc(text) + "</span>"; }
 function irrById(id) { return IRRITANTS.find(function (i) { return i.id === id; }); }
 function repById(id) { return REPONSES.find(function (r) { return r.id === id; }); }
-function setTab(t) { state.tab = t; render(); window.scrollTo(0, 0); }
+function setTab(t) { state.tab = t; render(); window.scrollTo(0, 0); if (t === "detection" && DB.enabled && !DB.demo) { if (!state.det.loaded) chargerDetections(); if (!state.det.ia.loaded) chargerIa(); } }
 
 
 function occurrences(list) {
@@ -339,6 +339,8 @@ function viewSuivre() {
 // ---------------------------------------------------------------------------
 
 
+state.det = { running: false, loaded: false, rows: [], err: "", last: null,
+  ia: { loaded: false, providers: [], provider: "", model: "", baseUrl: "", models: [], status: null, busy: "", msg: "", key: "" } };
 state.role = "collab";
 state.tab = "arrivees";
 state.lucas = { recu: false, envoyes: {}, infos: { lieu: "", materiel: "", acces: "" }, complete: false };
@@ -518,6 +520,194 @@ function viewTableau() {
     '<p class="note">Indicateurs de processus agrégés : aucun nom, aucun classement d\'équipe ou de manager, aucun indicateur sur un groupe de moins de 5 personnes (seuil proposé). Les valeurs viennent du jeu de données fictif ; le reste est « à mesurer ».</p>';
 }
 
+// ----------------------------- DÉTECTION IA (HRBP) --------------------------
+
+async function chargerDetections() {
+  try { state.det.rows = await dbLoadDetections(); state.det.loaded = true; state.det.err = ""; }
+  catch (e) { state.det.err = e.message; }
+  render();
+}
+function lireConfigIa() {
+  const g = function (id) { const e = document.getElementById(id); return e ? e.value : ""; };
+  const ia = state.det.ia;
+  ia.provider = g("ia-provider") || ia.provider;
+  ia.model = g("ia-model").trim();
+  ia.baseUrl = g("ia-base").trim() || ia.baseUrl;
+  const typed = document.getElementById("ia-key");
+  if (typed) ia.key = typed.value.trim(); // gardée en mémoire de la page seulement, jamais dans le stockage du navigateur
+  return { provider: ia.provider, model: ia.model, base_url: ia.baseUrl, api_key: ia.key };
+}
+function memoriserPrefsIa() {
+  try { localStorage.setItem("acia-ia", JSON.stringify({ provider: state.det.ia.provider, model: state.det.ia.model })); } catch (e) { /* facultatif */ }
+}
+async function chargerIa() {
+  const ia = state.det.ia;
+  try {
+    const c = await dbLoadAiConfig();
+    ia.providers = c.providers;
+    let prefs = {};
+    try { prefs = JSON.parse(localStorage.getItem("acia-ia") || "{}"); } catch (e) { prefs = {}; }
+    const ids = c.providers.map(function (p) { return p.id; });
+    ia.provider = ids.indexOf(prefs.provider) >= 0 ? prefs.provider : (c.defaultProvider || ids[0] || "");
+    const p = c.providers.find(function (x) { return x.id === ia.provider; });
+    ia.model = (prefs.provider === ia.provider && prefs.model) ? prefs.model : (p && p.default_model) || "";
+    ia.baseUrl = (p && p.base_url) || "";
+    ia.loaded = true;
+    await majStatutCle(true);
+  } catch (e) { state.det.err = e.message; }
+  render();
+}
+async function majStatutCle(noRender) {
+  const ia = state.det.ia;
+  ia.status = null;
+  try { ia.status = await dbAi("status", { provider: ia.provider }); } catch (e) { ia.status = null; }
+  if (!noRender) render();
+}
+async function changerFournisseur() {
+  const ia = state.det.ia;
+  ia.provider = document.getElementById("ia-provider").value;
+  const p = ia.providers.find(function (x) { return x.id === ia.provider; });
+  ia.model = (p && p.default_model) || ""; ia.baseUrl = (p && p.base_url) || ""; ia.models = []; ia.msg = ""; ia.key = "";
+  await majStatutCle();
+}
+async function actionIa(nom) {
+  const ia = state.det.ia, cfg = lireConfigIa();
+  if (ia.busy) return;
+  ia.busy = nom; ia.msg = ""; state.det.err = ""; render();
+  try {
+    if (nom === "models") {
+      const r = await dbAi("models", cfg); ia.models = r.models;
+      ia.msg = r.models.length + " modèles chargés (clé : " + r.key_source + "). Choisissez-en un dans la liste du champ Modèle.";
+    } else if (nom === "save_key") {
+      await dbAi("save_key", cfg); ia.key = ""; ia.msg = "Clé mémorisée (chiffrée) pour votre compte."; await majStatutCle(true);
+    } else if (nom === "delete_key") {
+      await dbAi("delete_key", cfg); ia.msg = "Votre clé mémorisée est supprimée."; await majStatutCle(true);
+    } else if (nom === "set_default") {
+      if (!confirm("Définir ce fournisseur, ce modèle et cette clé comme réglage par défaut du projet pour tous les HRBP ?")) { ia.busy = ""; render(); return; }
+      await dbAi("set_default", cfg); ia.key = ""; ia.msg = "Réglage par défaut du projet enregistré."; await majStatutCle(true);
+    }
+    memoriserPrefsIa();
+  } catch (e) { state.det.err = e.message; }
+  ia.busy = ""; render();
+}
+async function lancerDetection() {
+  if (state.det.running) return;
+  const cfg = lireConfigIa();
+  memoriserPrefsIa();
+  state.det.running = true; state.det.err = ""; state.det.ia.msg = ""; render();
+  try {
+    state.det.last = await dbRunDetection(cfg);
+    state.det.rows = await dbLoadDetections(); state.det.loaded = true;
+  } catch (e) { state.det.err = e.message; }
+  state.det.running = false; render();
+}
+function setDetStatut(id, s) {
+  const d = state.det.rows.find(function (x) { return x.id === id; });
+  if (d) d.statut = s;
+  dbSetDetStatut(id, s); render();
+}
+async function ajouterSource() {
+  const g = function (id) { return document.getElementById(id); };
+  const conf = g("s-conf").checked, titre = g("s-titre").value.trim(), texte = g("s-texte").value.trim();
+  if (!conf && (!titre || !texte)) { toast("Renseignez l'objet et le texte.", true); return; }
+  try {
+    // Un mail confidentiel n'est jamais enregistré : ni objet, ni contenu, ni expéditeur.
+    const ev = await dbAddEvent(conf
+      ? { src: "mail", de: "Expéditeur masqué", titre: "Mail confidentiel", texte: "Contenu non affiché.", conf: true }
+      : { src: g("s-src").value, de: g("s-de").value.trim(), titre: titre, texte: texte, conf: false });
+    EVENTS.push(ev);
+    toast("Source ajoutée : " + ev.ref + ".");
+    g("s-titre").value = ""; g("s-texte").value = ""; g("s-de").value = ""; g("s-conf").checked = false;
+  } catch (e) { toast("Ajout impossible : " + e.message, true); }
+}
+
+function viewDetection() {
+  const D = state.det;
+  const bloque = DB.demo || !DB.enabled;
+  const labels = { faible: "Confiance faible", moyenne: "Confiance moyenne", haute: "Confiance haute" };
+  const cls = { faible: "b-slate", moyenne: "b-amber", haute: "b-emerald" };
+  const runs = {};
+  D.rows.forEach(function (d) { (runs[d.run_id] = runs[d.run_id] || []).push(d); });
+  const ids = Object.keys(runs);
+  const cards = ids.map(function (rid, n) {
+    const list = runs[rid], meta = list[0].detection_runs || {};
+    const date = meta.created_at ? new Date(meta.created_at).toLocaleString("fr-FR") : "";
+    return '<h3 style="margin:' + (n ? "22px" : "4px") + ' 0 8px">Analyse du ' + esc(date) + '</h3>' +
+      (meta.resume ? '<p class="note" style="margin:0 0 10px">' + esc(meta.resume) + " (" + (meta.nb_events || "?") + " sources lues, modèle " + esc(meta.model || "?") + ")</p>" : "") +
+      list.map(function (d) {
+        const r = d.reponse ? repById(d.reponse) : null;
+        const ex = d.existant_id ? irrById(d.existant_id) : null;
+        const stCls = d.statut === "Validé" ? "b-emerald" : d.statut === "Ignoré" ? "b-slate" : "b-amber";
+        return '<div class="card irr-card"><div class="irrtitle">' + esc(d.titre) + "</div>" +
+          '<div class="irrtags">' + badge(cls[d.confiance] || "b-slate", labels[d.confiance] || "Confiance ?") +
+            badge(d.sources.length >= 2 ? "b-amber" : "b-slate", d.sources.length >= 2 ? "Irritant · " + d.sources.length + " sources" : "Signal isolé · 1 source") +
+            (r ? badge("b-slate", r.label) : "") + (ex ? badge("b-violet", "Déjà au registre : " + ex.court) : badge("b-sky", "Nouveau")) + badge(stCls, d.statut) + "</div>" +
+          '<div class="irrdetail">Sources : ' + esc(d.sources.join(", ")) + "</div>" +
+          '<p style="font-size:14px;margin-top:8px"><b>Proposition :</b> ' + esc(d.proposition || "") + "</p>" +
+          '<p style="font-size:13px;color:#4a4360;margin-top:4px"><b>Pourquoi ce niveau :</b> ' + esc(d.pourquoi || "") + "</p>" +
+          '<div class="btns"><button class="btn ok" onclick="setDetStatut(\'' + d.id + '\',\'Validé\')">Valider</button>' +
+          '<button class="btn ghost" onclick="setDetStatut(\'' + d.id + '\',\'Ignoré\')">Ignorer</button>' +
+          '<button class="btn ghost" onclick="setDetStatut(\'' + d.id + '\',\'À valider\')">Remettre à valider</button></div></div>';
+      }).join("");
+  }).join("");
+
+  const last = D.last ? '<div class="result"><b>Analyse terminée</b><p>' + D.last.nb_irritants + " irritant(s) proposé(s) à partir de " + D.last.nb_sources + " sources" +
+    (D.last.nb_exclus ? " (" + D.last.nb_exclus + " mail confidentiel écarté, jamais envoyé à l'IA)" : "") +
+    (D.last.provider ? " ; fournisseur " + esc(D.last.provider) + ", modèle " + esc(D.last.model) + ", clé : " + esc(D.last.key_source) : "") +
+    (D.last.nb_rejetes ? " ; " + D.last.nb_rejetes + " rejeté(s) faute de source valide" : "") + ".</p></div>" : "";
+  const err = D.err ? '<div class="obj" style="margin-top:12px"><b>Erreur :</b> ' + esc(D.err) + "</div>" : "";
+  const aide = bloque ? '<div class="obj todo" style="margin-bottom:12px">La détection IA appelle une API payante : elle est réservée aux comptes réels avec le profil HRBP, pas à la démonstration.</div>' : "";
+
+  const empty = !ids.length ? '<div class="empty"><div class="big">🔎</div><p>Aucune analyse pour l\'instant. L\'agent lit les mails et comptes rendus de la base, repère les irritants du processus et propose la réponse la plus simple. Vous validez.</p></div>' : "";
+
+  const form = '<div class="card"><div class="spechead">Ajouter une source à analyser</div>' +
+    '<label class="fl">Type<select id="s-src"><option value="mail">Mail de la boîte RH</option><option value="cr">Compte rendu de réunion</option></select></label>' +
+    '<label class="fl">Expéditeur, fonction (facultatif)<input id="s-de" placeholder="ex. Marie Durand, manager" /></label>' +
+    '<label class="fl">Objet ou titre<input id="s-titre" /></label>' +
+    '<label class="fl">Texte<textarea id="s-texte" rows="6"></textarea></label>' +
+    '<label class="fl" style="display:flex;gap:8px;align-items:center;font-weight:600"><input id="s-conf" type="checkbox" style="width:auto;margin:0" /> Confidentiel (rien n\'est enregistré ni analysé)</label>' +
+    '<button class="btn" onclick="ajouterSource()">Ajouter à la base</button>' +
+    '<p class="note">Seul le rôle de l\'expéditeur est transmis à l\'IA, pas son nom. Les noms cités dans le texte restent dans le texte : ne collez que des contenus que Scalian autorise à traiter.</p></div>';
+
+  const ia = D.ia;
+  const prov = ia.providers.find(function (x) { return x.id === ia.provider; }) || {};
+  const stt = ia.status;
+  const cles = !stt ? badge("b-slate", "Statut des clés : inconnu") :
+    badge(stt.user_key ? "b-emerald" : "b-slate", "Ma clé : " + (stt.user_key ? "oui" : "non")) + " " +
+    badge((stt.default_key || stt.env_key) ? "b-emerald" : "b-slate", "Clé par défaut du projet : " + (stt.default_key ? "oui (base)" : stt.env_key ? "oui (secret)" : "non"));
+  const busy = !!ia.busy || D.running;
+  const iaCard = '<div class="card" style="margin-bottom:16px"><div class="spechead">Fournisseur d\'IA</div>' +
+    (ia.loaded
+      ? '<label class="fl">Fournisseur<select id="ia-provider" onchange="changerFournisseur()">' +
+          ia.providers.map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === ia.provider ? " selected" : "") + ">" + esc(p.label) + "</option>"; }).join("") + "</select></label>" +
+        (ia.provider === "custom" ? '<label class="fl">Adresse de l\'API (https)<input id="ia-base" value="' + esc(ia.baseUrl) + '" placeholder="https://api.exemple.com/v1" /></label>' : "") +
+        '<label class="fl">Modèle<input id="ia-model" list="ia-models" value="' + esc(ia.model) + '" placeholder="ex. nom du modèle" autocomplete="off" /></label>' +
+        '<datalist id="ia-models">' + ia.models.map(function (m) { return '<option value="' + esc(m) + '"></option>'; }).join("") + "</datalist>" +
+        '<label class="fl">Clé d\'API (facultatif)<input id="ia-key" type="password" autocomplete="off" value="' + esc(ia.key) + '" placeholder="' + esc(prov.key_hint || "Laisser vide pour utiliser la clé mémorisée ou par défaut") + '" /></label>' +
+        '<div class="irrtags" style="margin-top:8px">' + cles + "</div>" +
+        '<div class="btns">' +
+          '<button class="ctl" onclick="actionIa(\'models\')"' + (busy ? " disabled" : "") + ">Charger les modèles</button>" +
+          '<button class="ctl" onclick="actionIa(\'save_key\')"' + (busy ? " disabled" : "") + ">Mémoriser ma clé</button>" +
+          '<button class="ctl" onclick="actionIa(\'delete_key\')"' + (busy || !(stt && stt.user_key) ? " disabled" : "") + ">Supprimer ma clé</button>" +
+          '<button class="ctl" onclick="actionIa(\'set_default\')"' + (busy ? " disabled" : "") + ">Définir comme défaut du projet</button></div>" +
+        (ia.msg ? '<p class="note" style="color:#047857">' + esc(ia.msg) + "</p>" : "") +
+        '<p class="note">Ordre d\'utilisation de la clé : saisie ici, puis clé mémorisée pour votre compte, puis clé par défaut du projet. Les clés mémorisées sont chiffrées côté serveur et ne sont jamais relues par le site.' +
+        (stt && !stt.can_store ? " <b>Pour mémoriser une clé, ajoutez le secret KEY_ENCRYPTION_SECRET dans Supabase.</b>" : "") + "</p>"
+      : '<p class="note" style="margin:8px 0 0">Chargement des fournisseurs…</p>') + "</div>";
+
+  return "<h2>Détection IA des irritants</h2>" + aide +
+    '<div class="controls"><button class="btn slim" onclick="lancerDetection()"' + ((D.running || bloque) ? " disabled" : "") + ">" +
+      (D.running ? "Analyse en cours…" : "Lancer la détection") + "</button>" +
+      '<button class="ctl" onclick="chargerDetections()"' + (bloque ? " disabled" : "") + ">Actualiser</button></div>" +
+    last + err +
+    '<div class="row c-3-2"><div style="margin-top:8px">' + (bloque ? "" : iaCard) + (cards || empty) + "</div><div>" + form +
+    '<div class="card trust" style="margin-top:16px"><h3>Garde-fous</h3><ul class="arrows">' +
+      "<li><span>✓</span><span>Les clés ne sont jamais dans le site ni dans GitHub : saisie unique, base chiffrée ou secret Supabase.</span></li>" +
+      "<li><span>✓</span><span>Chaque irritant cite des sources réelles : sans source valide, il est rejeté.</span></li>" +
+      "<li><span>✓</span><span>Rien n'est envoyé ni décidé : le HRBP valide.</span></li>" +
+      "<li><span>✕</span><span>Les mails confidentiels ne sont jamais transmis à l'IA.</span></li></ul></div></div></div>";
+}
+
 // ----------------------------- FUTUR EMPLOYÉ --------------------------------
 
 function viewFutur() {
@@ -532,7 +722,7 @@ function viewFutur() {
 function render() {
   renderTabs();
   renderWho();
-  const views = { arrivees: viewArrivees, registre: viewObserver, orienter: viewOrienter, spec: viewSpec, suivre: viewSuivre, mesarrivees: viewMesArrivees, equipe: viewEquipe, tableau: viewTableau, futur: viewFutur };
+  const views = { arrivees: viewArrivees, registre: viewObserver, orienter: viewOrienter, spec: viewSpec, suivre: viewSuivre, mesarrivees: viewMesArrivees, detection: viewDetection, equipe: viewEquipe, tableau: viewTableau, futur: viewFutur };
   document.getElementById("main").innerHTML = views[state.tab]();
   state.justAdded = false; state.fresh = null;
 }
