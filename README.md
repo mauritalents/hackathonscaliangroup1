@@ -13,3 +13,7 @@ L'onglet Paramétrage permet au HRBP, avec un vrai compte, d'ajouter, modifier e
 ### Gestion des utilisateurs (fonction admin-users)
 
 Créer, modifier, supprimer un utilisateur et définir son mot de passe exigent la clé service_role, qui reste côté serveur. Déployez la fonction `admin-users` comme celle de la détection : Supabase, Edge Functions, Deploy a new function, nom exact `admin-users`, collez `supabase/functions/admin-users/index.ts`. Aucun secret à ajouter. La fonction refuse tout appel hors HRBP réel, la suppression de son propre compte, le retrait de son propre profil HRBP et la suppression du dernier HRBP.
+
+### Activer ou désactiver un irritant
+
+Dans Paramétrage, Irritants, le bouton Désactiver retire l'irritant de tous les écrans sans le supprimer (ses statuts et avis sont conservés) ; Activer le remet. Exécutez une fois `supabase/migration-irritants-actif.sql`.

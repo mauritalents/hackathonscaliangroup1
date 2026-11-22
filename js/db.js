@@ -90,7 +90,7 @@ async function dbLoadReference() {
 
   const irr = await DB.client.from("irritants").select("*").order("position");
   if (irr.error) throw irr.error;
-  replaceContent(IRRITANTS, irr.data.map(function (x) {
+  replaceContent(IRRITANTS, irr.data.filter(function (x) { return x.actif !== false; }).map(function (x) {
     return { id: x.id, titre: x.titre, court: x.court, signal: x.signal, color: x.color, note: x.note,
       traitement: x.traitement, reponse: x.reponse, demo: x.demo, proposition: x.proposition, pourquoi: x.pourquoi };
   }));

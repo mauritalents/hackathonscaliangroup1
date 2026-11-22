@@ -2,12 +2,12 @@
 // Les droits sont garantis par la base (migration-parametrage.sql), pas par ce fichier.
 
 const ADMIN_TABLES = [
-  { id: "irritants", label: "Irritants", pk: "id", order: "position", resume: ["id", "titre", "reponse", "note"], cols: [
+  { id: "irritants", label: "Irritants", pk: "id", order: "position", resume: ["id", "titre", "reponse", "actif"], cols: [
     { k: "id", l: "Identifiant (unique)", t: "text", req: 1, pk: 1 }, { k: "position", l: "Position", t: "int", req: 1 },
     { k: "titre", l: "Titre", t: "text", req: 1 }, { k: "court", l: "Titre court", t: "text", req: 1 },
     { k: "signal", l: "Signal", t: "text", req: 1 }, { k: "color", l: "Couleur", t: "text", req: 1 },
     { k: "note", l: "Note", t: "int", req: 1 }, { k: "traitement", l: "Traitement", t: "text", req: 1 },
-    { k: "reponse", l: "Réponse (identifiant)", t: "text", req: 1 }, { k: "demo", l: "Irritant de démonstration", t: "bool" },
+    { k: "reponse", l: "Réponse (identifiant)", t: "text", req: 1 }, { k: "demo", l: "Irritant de démonstration", t: "bool" }, { k: "actif", l: "Actif (affiché aux utilisateurs)", t: "bool", dflt: true },
     { k: "proposition", l: "Proposition", t: "ta", req: 1 }, { k: "pourquoi", l: "Pourquoi", t: "ta", req: 1 }] },
   { id: "events", label: "Sources (mails, comptes rendus)", pk: "position", order: "position", resume: ["position", "src", "ref", "titre"], cols: [
     { k: "position", l: "Position (unique)", t: "int", req: 1, pk: 1 }, { k: "jour", l: "Jour", t: "text", req: 1 },
@@ -62,11 +62,13 @@ function admValTexte(v) {
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
 }
-function admCourt(v) { const s = admValTexte(v); return s.length > 70 ? s.slice(0, 70) + "…" : s; }
+function admCourt(v) {
+  if (v === true) return "oui";
+  if (v === false) return "non"; const s = admValTexte(v); return s.length > 70 ? s.slice(0, 70) + "…" : s; }
 
 function admNouveau() {
   const d = admDef(), vals = {};
-  d.cols.forEach(function (c) { vals[c.k] = c.t === "bool" ? false : c.t === "sel" ? c.opts[0] : ""; });
+  d.cols.forEach(function (c) { vals[c.k] = c.t === "bool" ? !!c.dflt : c.t === "sel" ? c.opts[0] : ""; });
   state.adm.form = { mode: "new", vals: vals, orig: null, err: "" };
   render();
 }
@@ -146,6 +148,20 @@ async function admEnregistrer() {
   } catch (e) {
     A.busy = false; f.err = e.message || String(e); render();
   }
+}
+
+async function admBasculer(i) {
+  const A = state.adm, d = admDef(), row = A.rows[i];
+  if (!admPeutEcrire()) { A.err = "Modification impossible en mode démonstration."; render(); return; }
+  const actif = row.actif === false;
+  try {
+    const r = await DB.client.from(d.id).update({ actif: actif }).eq(d.pk, row[d.pk]).select();
+    if (r.error) throw r.error;
+    if (!r.data || !r.data.length) throw new Error("Aucune ligne modifiée : droits insuffisants ou ligne introuvable.");
+    toast(actif ? "Irritant activé." : "Irritant désactivé : il n'apparaît plus aux utilisateurs.");
+    await admRecharger();
+    await admCharger();
+  } catch (e) { admErr(e); render(); }
 }
 
 async function admSupprimer(i) {
@@ -265,7 +281,7 @@ function admListe() {
     d.resume.map(function (k) { return '<th align="left">' + esc(k) + "</th>"; }).join("") + "<th></th></tr>" +
     A.rows.map(function (r, i) {
       return '<tr style="border-top:1px solid var(--lav2)">' + d.resume.map(function (k) { return "<td>" + esc(admCourt(r[k])) + "</td>"; }).join("") +
-        '<td style="white-space:nowrap"><button class="ctl" onclick="admModifier(' + i + ')"' + (ecrire ? "" : " disabled") + '>Modifier</button> <button class="ctl" onclick="admSupprimer(' + i + ')"' + (ecrire ? "" : " disabled") + ">Supprimer</button></td></tr>";
+        '<td style="white-space:nowrap">' + (d.id === "irritants" ? '<button class="ctl" onclick="admBasculer(' + i + ')"' + (ecrire ? "" : " disabled") + ">" + (r.actif === false ? "Activer" : "Désactiver") + "</button> " : "") + '<button class="ctl" onclick="admModifier(' + i + ')"' + (ecrire ? "" : " disabled") + '>Modifier</button> <button class="ctl" onclick="admSupprimer(' + i + ')"' + (ecrire ? "" : " disabled") + ">Supprimer</button></td></tr>";
     }).join("") + "</table></div>";
 }
 
@@ -277,7 +293,7 @@ function viewParametrage() {
     (ecrire ? "" : '<div class="obj todo"><b>Lecture seule :</b> la modification est réservée à un compte HRBP réel. Le mode démonstration ne peut pas modifier les données.</div>') +
     '<div class="btns" style="flex-wrap:wrap">' + chips + "</div>" +
     (d.danger ? '<div class="obj todo"><b>Attention :</b> ' + esc(d.danger) + "</div>" : "") +
-    (A.err ? '<div class="obj"><b>Erreur :</b> ' + esc(A.err) + (/row-level security|permission denied|policy/i.test(A.err) ? " Exécutez supabase/migration-parametrage.sql et vérifiez que votre profil est HRBP." : "") + "</div>" : "") +
+    (A.err ? '<div class="obj"><b>Erreur :</b> ' + esc(A.err) + (/row-level security|permission denied|policy/i.test(A.err) ? " Exécutez supabase/migration-parametrage.sql et vérifiez que votre profil est HRBP." : /actif/.test(A.err) ? " Exécutez supabase/migration-irritants-actif.sql." : "") + "</div>" : "") +
     (d.users ? '<div class="btns"><button class="btn" onclick="admUNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter un utilisateur</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>"
       : '<div class="btns"><button class="btn" onclick="admNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter une ligne</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>") +
     "</div>" + admFormulaire() + admUFormulaire() + '<div class="card" style="margin-top:16px">' + admListe() + "</div>";

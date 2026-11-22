@@ -43,7 +43,8 @@ create table public.irritants (
   id text primary key, position int not null,
   titre text not null, court text not null, signal text not null, color text not null,
   note int not null, traitement text not null, reponse text not null, demo boolean not null default false,
-  proposition text not null, pourquoi text not null
+  proposition text not null, pourquoi text not null,
+  actif boolean not null default true
 );
 create table public.events (
   position int primary key,
