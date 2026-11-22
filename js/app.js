@@ -26,7 +26,7 @@ function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").
 function badge(cls, text) { return '<span class="badge ' + cls + '">' + esc(text) + "</span>"; }
 function irrById(id) { return IRRITANTS.find(function (i) { return i.id === id; }); }
 function repById(id) { return REPONSES.find(function (r) { return r.id === id; }); }
-function setTab(t) { state.tab = t; render(); window.scrollTo(0, 0); if (t === "detection" && DB.enabled && !DB.demo) { if (!state.det.loaded) chargerDetections(); if (!state.det.ia.loaded) chargerIa(); } }
+function setTab(t) { state.tab = t; render(); window.scrollTo(0, 0); if (t === "parametrage" && DB.enabled) admCharger(); if (t === "detection" && DB.enabled && !DB.demo) { if (!state.det.loaded) chargerDetections(); if (!state.det.ia.loaded) chargerIa(); } }
 
 
 function occurrences(list) {
@@ -886,7 +886,7 @@ function viewFutur() {
 function render() {
   renderTabs();
   renderWho();
-  const views = { arrivees: viewArrivees, registre: viewObserver, orienter: viewOrienter, spec: viewSpec, suivre: viewSuivre, mesarrivees: viewMesArrivees, detection: viewDetection, equipe: viewEquipe, tableau: viewTableau, futur: viewFutur };
+  const views = { arrivees: viewArrivees, registre: viewObserver, orienter: viewOrienter, spec: viewSpec, suivre: viewSuivre, mesarrivees: viewMesArrivees, detection: viewDetection, parametrage: viewParametrage, equipe: viewEquipe, tableau: viewTableau, futur: viewFutur };
   document.getElementById("main").innerHTML = views[state.tab]();
   state.justAdded = false; state.fresh = null;
 }
