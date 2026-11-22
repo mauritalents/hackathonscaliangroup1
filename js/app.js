@@ -892,14 +892,15 @@ function viewDetection() {
   const optRuns = '<option value="">Toutes les analyses</option>' + listeRuns.map(function (r) {
     return '<option value="' + esc(r.id) + '"' + (r.id === D.filtre.run ? " selected" : "") + ">" + esc(r.at ? new Date(r.at).toLocaleString("fr-FR") : "date inconnue") + " · " + r.n + " irritant(s)</option>";
   }).join("");
-  const filtreBar = !R.total ? "" : '<div class="card" style="margin-bottom:16px"><div class="spechead">Filtrer par date d\'exécution ou choisir une analyse</div>' +
+  const off = R.total ? "" : " disabled";
+  const filtreBar = '<div class="card" style="margin-bottom:16px"><div class="spechead">Filtrer par date d\'exécution ou choisir une analyse</div>' +
     '<div class="btns" style="flex-wrap:wrap;align-items:flex-end">' +
-    '<label class="fl" style="margin:0">Analyse<select id="det-run" onchange="setFiltreAnalyse()">' + optRuns + "</select></label>" +
-    '<label class="fl" style="margin:0">Du<input id="det-from" type="date" value="' + esc(D.filtre.from) + '" onchange="setFiltreDate()" /></label>' +
-    '<label class="fl" style="margin:0">Au<input id="det-to" type="date" value="' + esc(D.filtre.to) + '" onchange="setFiltreDate()" /></label>' +
-    '<button class="ctl" onclick="filtreRapide(0)">Aujourd\'hui</button><button class="ctl" onclick="filtreRapide(7)">7 derniers jours</button>' +
-    '<button class="ctl" onclick="filtreRapide(30)">30 derniers jours</button><button class="ctl" onclick="filtreRapide(null)">Toutes</button></div>' +
-    '<p class="note" id="det-count" style="margin:8px 0 0">' + esc(detCompte(R)) + "</p></div>";
+    '<label class="fl" style="margin:0">Analyse<select id="det-run" onchange="setFiltreAnalyse()"' + off + '>' + optRuns + "</select></label>" +
+    '<label class="fl" style="margin:0">Du<input id="det-from" type="date" value="' + esc(D.filtre.from) + '" onchange="setFiltreDate()"' + off + ' /></label>' +
+    '<label class="fl" style="margin:0">Au<input id="det-to" type="date" value="' + esc(D.filtre.to) + '" onchange="setFiltreDate()"' + off + ' /></label>' +
+    '<button class="ctl" onclick="filtreRapide(0)"' + off + '>Aujourd\'hui</button><button class="ctl" onclick="filtreRapide(7)"' + off + '>7 derniers jours</button>' +
+    '<button class="ctl" onclick="filtreRapide(30)"' + off + '>30 derniers jours</button><button class="ctl" onclick="filtreRapide(null)"' + off + '>Toutes</button></div>' +
+    '<p class="note" id="det-count" style="margin:8px 0 0">' + esc(R.total ? detCompte(R) : "Aucune analyse pour l'instant : le filtre sera disponible après la première détection.") + "</p></div>";
   const empty = !R.total ? '<div class="empty"><div class="big">🔎</div><p>Aucune analyse pour l\'instant. L\'agent lit les mails et comptes rendus de la base, repère les irritants du processus et propose la réponse la plus simple. Vous validez.</p></div>' : "";
 
   const form = '<div class="card"><div class="spechead">Ajouter une source à analyser</div>' +
