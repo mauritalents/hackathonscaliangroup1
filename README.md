@@ -25,3 +25,7 @@ Dans Détection IA, le bloc « Filtrer par date d'exécution » limite les résu
 ### Gérer les clés d'API depuis le site
 
 Paramétrage, Clés d'API : pour chaque fournisseur, le HRBP voit si une clé personnelle, une clé par défaut du projet et un secret Supabase existent, avec la date et l'auteur de la clé par défaut. Il peut saisir ou remplacer sa clé personnelle, définir ou remplacer la clé par défaut du projet, supprimer l'une ou l'autre et tester chaque clé (le test liste les modèles du fournisseur). Aucune clé n'est jamais affichée. Cette page exige la version 4 de la fonction `detect-irritants` : redéployez `supabase/functions/detect-irritants/index.ts`. Le secret Supabase `<FOURNISSEUR>_API_KEY` se gère dans Supabase, pas dans le site.
+
+### Importer depuis Excel ou CSV
+
+Dans Paramétrage, les tables de données (irritants, sources, arrivées, brouillons, textes de référence, fournisseurs d'IA) ont un bouton « Importer (Excel ou CSV) ». Le fichier est lu dans le navigateur, sans bibliothèque externe : .csv (virgule, point virgule ou tabulation) ou .xlsx (première feuille). La première ligne contient les en-têtes (clé de la colonne ou son libellé) ; le bouton « Télécharger le modèle CSV » donne les en-têtes attendus. Chaque ligne est contrôlée avant import (champs obligatoires, nombres, oui/non, JSON) et un aperçu est affiché ; les lignes refusées sont listées avec leur numéro. Deux modes : ajouter seulement les lignes nouvelles, ou ajouter et mettre à jour selon l'identifiant. Non géré : l'ancien format .xls et la conversion des dates Excel.

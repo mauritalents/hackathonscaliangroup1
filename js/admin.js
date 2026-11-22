@@ -34,7 +34,7 @@ const ADMIN_TABLES = [
   { id: "apikeys", label: "Clés d'API", keys: true }
 ];
 
-state.adm = { table: "irritants", rows: [], loading: false, err: "", form: null, busy: false, uform: null, kform: null, tests: {}, kinfo: null };
+state.adm = { table: "irritants", rows: [], loading: false, err: "", form: null, busy: false, uform: null, kform: null, tests: {}, kinfo: null, imp: null };
 
 function admDef() { return ADMIN_TABLES.find(function (t) { return t.id === state.adm.table; }); }
 function admPeutEcrire() { return !!(DB.enabled && !DB.demo && DB.user && !DB.user.is_anonymous); }
@@ -42,7 +42,7 @@ function admErr(e) { state.adm.err = (e && e.message) || String(e); }
 
 async function admCharger() {
   const A = state.adm, d = admDef();
-  A.loading = true; A.err = ""; A.form = null; A.uform = null; A.kform = null; render();
+  A.loading = true; A.err = ""; A.form = null; A.uform = null; A.kform = null; A.imp = null; render();
   try {
     if (d.keys) {
       const pg = await dbAi("ping");
@@ -318,6 +318,209 @@ function admKListe() {
     '<p class="note">Ordre d\'utilisation : clé saisie dans Détection IA, puis ma clé, puis clé par défaut du projet, puis secret Supabase. Le secret Supabase se gère dans Supabase (Edge Functions, Secrets), jamais dans ce site. Aucune clé n\'est jamais affichée.</p>';
 }
 
+// ---------------------------------------------------------------------------
+// Import depuis un fichier CSV ou Excel (.xlsx). Aucune bibliothèque externe : le fichier est lu dans le navigateur.
+// ---------------------------------------------------------------------------
+function admNorm(x) { return String(x == null ? "" : x).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+
+function csvParse(text) {
+  text = text.replace(/^﻿/, "");
+  const first = text.split(/\r?\n/)[0] || "";
+  const sep = [";", "\t", ","].map(function (c) { return [c, first.split(c).length]; }).sort(function (a, b) { return b[1] - a[1]; })[0][0];
+  const rows = []; let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === sep) { row.push(cur); cur = ""; }
+    else if (ch === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+    else if (ch !== "\r") cur += ch;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+
+async function inflateRaw(bytes) {
+  const ds = new DecompressionStream("deflate-raw");
+  const stream = new Blob([bytes]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function zipEntries(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  let e = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) { if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; } }
+  if (e < 0) throw new Error("Ce fichier n'est pas un classeur Excel .xlsx valide.");
+  const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true);
+  const out = {};
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), lo = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nl));
+    const lnl = dv.getUint16(lo + 26, true), lxl = dv.getUint16(lo + 28, true), start = lo + 30 + lnl + lxl;
+    out[name] = { method: method, data: u8.subarray(start, start + csize) };
+    p += 46 + nl + xl + cl;
+  }
+  return out;
+}
+async function zipText(files, name) {
+  const f = files[name]; if (!f) return null;
+  const raw = f.method === 0 ? f.data : await inflateRaw(f.data);
+  return new TextDecoder().decode(raw);
+}
+function colIndex(ref) { const m = /^([A-Z]+)/.exec(ref); let n = 0; for (const ch of m[1]) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; }
+async function xlsxParse(buf) {
+  if (typeof DecompressionStream === "undefined") throw new Error("Ce navigateur ne sait pas lire les fichiers Excel : enregistrez le fichier en CSV.");
+  const files = await zipEntries(buf);
+  const parser = new DOMParser();
+  const sheetName = Object.keys(files).filter(function (n) { return /^xl\/worksheets\/[^/]+\.xml$/.test(n); }).sort()[0];
+  if (!sheetName) throw new Error("Aucune feuille trouvée dans ce classeur.");
+  const shared = [];
+  const sst = await zipText(files, "xl/sharedStrings.xml");
+  if (sst) {
+    parser.parseFromString(sst, "application/xml").querySelectorAll("si").forEach(function (si) {
+      shared.push(Array.from(si.querySelectorAll("t")).map(function (t) { return t.textContent; }).join(""));
+    });
+  }
+  const doc = parser.parseFromString(await zipText(files, sheetName), "application/xml");
+  const rows = [];
+  doc.querySelectorAll("sheetData > row").forEach(function (r) {
+    const row = [];
+    r.querySelectorAll("c").forEach(function (c) {
+      const t = c.getAttribute("t"), v = c.querySelector("v"), idx = colIndex(c.getAttribute("r") || "A1");
+      let val = "";
+      if (t === "s" && v) val = shared[Number(v.textContent)] || "";
+      else if (t === "inlineStr") val = Array.from(c.querySelectorAll("t")).map(function (x) { return x.textContent; }).join("");
+      else if (t === "b" && v) val = v.textContent === "1" ? "true" : "false";
+      else if (v) val = v.textContent;
+      row[idx] = val;
+    });
+    rows.push(row);
+  });
+  return rows.map(function (r) { const o = []; for (let i = 0; i < r.length; i++) o.push(r[i] == null ? "" : r[i]); return o; });
+}
+
+// Convertit une cellule en valeur de la colonne, ou lève une erreur lisible.
+function admCoerce(c, raw) {
+  const v = String(raw == null ? "" : raw).trim();
+  if (c.t === "bool") {
+    if (v === "") return !!c.dflt;
+    const x = admNorm(v);
+    if (["oui", "true", "vrai", "1", "yes", "x"].indexOf(x) >= 0) return true;
+    if (["non", "false", "faux", "0", "no"].indexOf(x) >= 0) return false;
+    throw new Error("« " + c.k + " » : oui ou non attendu (valeur : " + v + ")");
+  }
+  if (v === "") {
+    if (c.req) throw new Error("« " + c.k + " » est obligatoire");
+    return c.t === "arr" ? [] : null;
+  }
+  if (c.t === "int") { const n = Number(v.replace(",", ".")); if (!Number.isInteger(n)) throw new Error("« " + c.k + " » : nombre entier attendu (valeur : " + v + ")"); return n; }
+  if (c.t === "arr") return v.split(/[,;]/).map(function (x) { return x.trim(); }).filter(Boolean);
+  if (c.t === "json") { try { return JSON.parse(v); } catch (e) { throw new Error("« " + c.k + " » : JSON invalide"); } }
+  if (c.t === "sel" && c.opts.indexOf(v) < 0) throw new Error("« " + c.k + " » : valeur permise " + c.opts.join(" ou ") + " (valeur : " + v + ")");
+  return v;
+}
+
+function admImpOuvrir() { state.adm.imp = { name: "", rows: [], errors: [], total: 0, mode: "new", busy: false, ignored: [], done: "" }; render(); }
+function admImpAnnuler() { state.adm.imp = null; render(); }
+function admImpMode(m) { state.adm.imp.mode = m; render(); }
+
+async function admImpFichier(input) {
+  const A = state.adm, d = admDef(), I = A.imp, file = input.files && input.files[0];
+  if (!file) return;
+  I.name = file.name; I.rows = []; I.errors = []; I.ignored = []; I.total = 0; I.done = "";
+  try {
+    if (file.size > 5 * 1024 * 1024) throw new Error("Fichier trop volumineux (5 Mo maximum).");
+    let table;
+    if (/\.xlsx$/i.test(file.name)) table = await xlsxParse(await file.arrayBuffer());
+    else if (/\.xls$/i.test(file.name)) throw new Error("Le format .xls (ancien Excel) n'est pas lu : enregistrez le fichier en .xlsx ou en CSV.");
+    else table = csvParse(await file.text());
+    table = table.filter(function (r) { return r.some(function (x) { return String(x).trim() !== ""; }); });
+    if (table.length < 2) throw new Error("Le fichier doit contenir une ligne d'en-têtes et au moins une ligne de données.");
+    // Correspondance des en-têtes avec les colonnes, par clé ou par libellé.
+    const head = table[0].map(function (h) { return admNorm(h); }), cols = [];
+    d.cols.forEach(function (c) {
+      let i = head.indexOf(admNorm(c.k));
+      if (i < 0) i = head.indexOf(admNorm(c.l));
+      if (i < 0) i = head.indexOf(admNorm(c.l.replace(/\s*\(.*\)\s*/g, "").replace(/\s*\*$/, "")));
+      if (i >= 0) cols.push({ c: c, i: i });
+    });
+    const used = cols.map(function (x) { return x.i; });
+    I.ignored = table[0].filter(function (h, i) { return used.indexOf(i) < 0 && String(h).trim() !== ""; });
+    const manque = d.cols.filter(function (c) { return c.req && !cols.some(function (x) { return x.c.k === c.k; }); });
+    if (manque.length) throw new Error("Colonnes obligatoires absentes : " + manque.map(function (c) { return c.k; }).join(", ") + ". Téléchargez le modèle pour voir les en-têtes attendus.");
+    const vus = {};
+    for (let r = 1; r < table.length; r++) {
+      I.total++;
+      try {
+        const o = {};
+        cols.forEach(function (x) { o[x.c.k] = admCoerce(x.c, table[r][x.i]); });
+        const key = String(o[d.pk]);
+        if (vus[key]) throw new Error("identifiant en double dans le fichier (" + key + ")");
+        vus[key] = 1;
+        I.rows.push(o);
+      } catch (e) { I.errors.push("Ligne " + (r + 1) + " : " + e.message); }
+    }
+  } catch (e) { I.errors = [e.message]; I.total = 0; }
+  render();
+}
+
+async function admImpConfirmer() {
+  const A = state.adm, d = admDef(), I = A.imp;
+  if (!I || I.busy || !I.rows.length) return;
+  if (!admPeutEcrire()) { I.errors = ["Import impossible en mode démonstration."]; render(); return; }
+  I.busy = true; I.done = ""; render();
+  try {
+    for (let i = 0; i < I.rows.length; i += 200) {
+      const chunk = I.rows.slice(i, i + 200);
+      const r = await DB.client.from(d.id).upsert(chunk, { onConflict: d.pk, ignoreDuplicates: I.mode === "new" });
+      if (r.error) throw new Error("Lignes " + (i + 2) + " à " + (i + chunk.length + 1) + " : " + r.error.message);
+      if (d.id === "irritants") {
+        const st = await DB.client.from("irritant_status").upsert(chunk.map(function (x) { return { irritant_id: x.id }; }), { onConflict: "irritant_id", ignoreDuplicates: true });
+        if (st.error) throw st.error;
+      }
+    }
+    const n = I.rows.length;
+    I.busy = false; toast("Import terminé : " + n + " ligne(s) traitée(s).");
+    await admRecharger();
+    const done = I.mode === "new" ? n + " ligne(s) lues ; celles dont l'identifiant existait déjà sont conservées sans changement." : n + " ligne(s) ajoutée(s) ou mises à jour.";
+    await admCharger();
+    A.imp = { name: I.name, rows: [], errors: [], total: 0, mode: I.mode, busy: false, ignored: [], done: done };
+    render();
+  } catch (e) { I.busy = false; I.errors = [e.message]; render(); }
+}
+
+function admImpModele() {
+  const d = admDef();
+  const ligne = d.cols.map(function (c) { return c.k; }).join(";");
+  const blob = new Blob(["﻿" + ligne + "\n"], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "modele-" + d.id + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+}
+
+function admImpPanneau() {
+  const A = state.adm, I = A.imp, d = admDef();
+  if (!I) return "";
+  const aide = d.cols.map(function (c) { return "<code>" + esc(c.k) + "</code>" + (c.req ? " *" : ""); }).join(", ");
+  const apercu = I.rows.slice(0, 5).map(function (r) {
+    return "<tr>" + d.resume.map(function (k) { return "<td>" + esc(admCourt(r[k])) + "</td>"; }).join("") + "</tr>";
+  }).join("");
+  return '<div class="card" style="margin-bottom:16px"><div class="spechead">Importer dans « ' + esc(d.label) + ' »</div>' +
+    '<p class="note">Fichier <b>.csv</b> (séparateur virgule, point virgule ou tabulation) ou <b>.xlsx</b> (première feuille). La première ligne contient les en-têtes. Colonnes reconnues (* obligatoire) : ' + aide + ". Booléens : oui ou non. Listes : valeurs séparées par des virgules. Les dates Excel ne sont pas converties : écrivez-les en texte.</p>" +
+    '<div class="btns"><button class="ctl" onclick="admImpModele()">Télécharger le modèle CSV</button></div>' +
+    '<label class="fl" style="display:block;margin-top:10px">Fichier<input type="file" accept=".csv,.txt,.xlsx" onchange="admImpFichier(this)" style="display:block;margin-top:4px"></label>' +
+    '<div style="margin-top:10px"><label style="display:block"><input type="radio" name="imp-mode" ' + (I.mode === "new" ? "checked " : "") + 'onchange="admImpMode(\'new\')"> Ajouter seulement les lignes nouvelles (les identifiants existants ne changent pas)</label>' +
+    '<label style="display:block;margin-top:4px"><input type="radio" name="imp-mode" ' + (I.mode === "upd" ? "checked " : "") + 'onchange="admImpMode(\'upd\')"> Ajouter et mettre à jour les lignes existantes (selon l\'identifiant)</label></div>' +
+    (I.done ? '<div class="result" style="margin-top:10px"><b>Import terminé</b><p>' + esc(I.done) + "</p></div>" : "") +
+    (I.name && !I.errors.length && !I.done ? '<p class="note" style="margin-top:10px"><b>' + esc(I.name) + "</b> : " + I.rows.length + " ligne(s) valide(s) sur " + I.total + (I.ignored.length ? ". Colonnes ignorées : " + esc(I.ignored.join(", ")) : "") + ".</p>" : "") +
+    (I.errors.length ? '<div class="obj" style="margin-top:10px"><b>' + (I.rows.length ? I.errors.length + " ligne(s) refusée(s) : elles ne seront pas importées." : "Import impossible.") + "</b><ul style=\"margin:6px 0 0 18px\">" + I.errors.slice(0, 15).map(function (e) { return "<li>" + esc(e) + "</li>"; }).join("") + (I.errors.length > 15 ? "<li>… et " + (I.errors.length - 15) + " autre(s)</li>" : "") + "</ul></div>" : "") +
+    (I.rows.length ? '<table class="tbl" style="width:100%;border-collapse:collapse;font-size:13px;margin-top:10px"><tr>' + d.resume.map(function (k) { return '<th align="left">' + esc(k) + "</th>"; }).join("") + "</tr>" + apercu + "</table>" +
+      (I.rows.length > 5 ? '<p class="note">Aperçu des 5 premières lignes sur ' + I.rows.length + ".</p>" : "") : "") +
+    '<div class="btns"><button class="btn" onclick="admImpConfirmer()"' + (I.rows.length && !I.busy ? "" : " disabled") + ">" + (I.busy ? "Import en cours…" : "Importer " + I.rows.length + " ligne(s)") + '</button><button class="btn ghost" onclick="admImpAnnuler()">Fermer</button></div></div>';
+}
+
 function admFormulaire() {
   const A = state.adm, d = admDef(), f = A.form;
   if (!f) return "";
@@ -368,6 +571,6 @@ function viewParametrage() {
     (d.danger ? '<div class="obj todo"><b>Attention :</b> ' + esc(d.danger) + "</div>" : "") +
     (A.err ? '<div class="obj"><b>Erreur :</b> ' + esc(A.err) + (/row-level security|permission denied|policy/i.test(A.err) ? " Exécutez supabase/migration-parametrage.sql et vérifiez que votre profil est HRBP." : /actif/.test(A.err) ? " Exécutez supabase/migration-irritants-actif.sql." : "") + "</div>" : "") +
     (d.keys ? '<div class="btns"><button class="btn ghost" onclick="admCharger()">Actualiser</button></div>' : d.users ? '<div class="btns"><button class="btn" onclick="admUNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter un utilisateur</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>"
-      : '<div class="btns"><button class="btn" onclick="admNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter une ligne</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>") +
-    "</div>" + admFormulaire() + admUFormulaire() + admKFormulaire() + '<div class="card" style="margin-top:16px">' + admListe() + "</div>";
+      : '<div class="btns"><button class="btn" onclick="admNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter une ligne</button><button class=\"btn ghost\" onclick=\"admImpOuvrir()\"" + (ecrire ? "" : " disabled") + ">Importer (Excel ou CSV)</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>") +
+    "</div>" + admImpPanneau() + admFormulaire() + admUFormulaire() + admKFormulaire() + '<div class="card" style="margin-top:16px">' + admListe() + "</div>";
 }
