@@ -33,7 +33,7 @@ const ADMIN_TABLES = [
   { id: "profiles", label: "Utilisateurs et profils", users: true }
 ];
 
-state.adm = { table: "irritants", rows: [], loading: false, err: "", form: null, busy: false };
+state.adm = { table: "irritants", rows: [], loading: false, err: "", form: null, busy: false, uform: null };
 
 function admDef() { return ADMIN_TABLES.find(function (t) { return t.id === state.adm.table; }); }
 function admPeutEcrire() { return !!(DB.enabled && !DB.demo && DB.user && !DB.user.is_anonymous); }
@@ -41,7 +41,7 @@ function admErr(e) { state.adm.err = (e && e.message) || String(e); }
 
 async function admCharger() {
   const A = state.adm, d = admDef();
-  A.loading = true; A.err = ""; A.form = null; render();
+  A.loading = true; A.err = ""; A.form = null; A.uform = null; render();
   try {
     if (d.users) {
       const r = await DB.client.from("profiles").select("id,email,full_name,role").not("email", "is", null).order("email");
@@ -101,6 +101,16 @@ function admLire() {
   return out;
 }
 
+// Conserve ce qui est tapé quand le formulaire est réaffiché après une erreur.
+function admGarder() {
+  const d = admDef(), f = state.adm.form;
+  if (!f) return;
+  d.cols.forEach(function (c) {
+    const el = document.getElementById("adm-f-" + c.k);
+    if (el) f.vals[c.k] = c.t === "bool" ? el.checked : el.value;
+  });
+}
+
 async function admRecharger() {
   // Les données de référence sont relues pour que les autres onglets reflètent les changements.
   try { await dbLoadReference(); await dbLoadState(); } catch (e) { console.error(e); }
@@ -111,6 +121,7 @@ async function admEnregistrer() {
   if (!f || A.busy) return;
   if (!admPeutEcrire()) { f.err = "Modification impossible en mode démonstration."; render(); return; }
   let vals;
+  admGarder();
   try { vals = admLire(); } catch (e) { f.err = e.message; render(); return; }
   A.busy = true; f.err = "";
   try {
@@ -152,13 +163,71 @@ async function admSupprimer(i) {
   } catch (e) { admErr(e); render(); }
 }
 
-async function admChangerRole(id, role) {
+// Gestion des utilisateurs : passe par la fonction admin-users (clé service_role côté serveur).
+async function admFn(action, payload) {
+  const r = await DB.client.functions.invoke("admin-users", { body: Object.assign({ action: action }, payload || {}) });
+  if (r.error) {
+    let msg = r.error.message;
+    if (r.error.name === "FunctionsFetchError") msg = "La fonction admin-users ne répond pas : elle n'est probablement pas déployée (Supabase, Edge Functions, nom exact admin-users).";
+    else { try { const j = await r.error.context.json(); if (j && j.error) msg = j.error; } catch (x) { /* corps non JSON */ } }
+    throw new Error(msg);
+  }
+  if (r.data && r.data.error) throw new Error(r.data.error);
+  return r.data;
+}
+function admUNouveau() { state.adm.uform = { mode: "new", id: null, vals: { email: "", full_name: "", role: "collab" }, err: "" }; render(); }
+function admUModifier(i) {
+  const u = state.adm.rows[i];
+  state.adm.uform = { mode: "edit", id: u.id, self: !!(DB.user && u.id === DB.user.id), vals: { email: u.email || "", full_name: u.full_name || "", role: u.role }, err: "" };
+  render();
+}
+function admUAnnuler() { state.adm.uform = null; render(); }
+async function admUEnregistrer() {
+  const A = state.adm, f = A.uform;
+  if (!f || A.busy) return;
+  if (!admPeutEcrire()) { f.err = "Modification impossible en mode démonstration."; render(); return; }
+  const g = function (k) { const el = document.getElementById("adm-u-" + k); return el ? String(el.value) : ""; };
+  const email = g("email").trim(), name = g("full_name").trim(), role = g("role"), pw = g("password"), pw2 = g("password2");
+  f.vals.email = email; f.vals.full_name = name; if (!f.self) f.vals.role = role;
+  if (!email) { f.err = "L'adresse e-mail est obligatoire."; render(); return; }
+  if (f.mode === "new" && !pw) { f.err = "Le mot de passe est obligatoire pour un nouvel utilisateur."; render(); return; }
+  if (pw !== pw2) { f.err = "Les deux mots de passe ne sont pas identiques."; render(); return; }
+  if (pw && pw.length < 8) { f.err = "Le mot de passe doit contenir au moins 8 caractères."; render(); return; }
+  A.busy = true; f.err = ""; render();
   try {
-    const r = await DB.client.rpc("admin_set_role", { target: id, new_role: role });
-    if (r.error) throw r.error;
-    toast("Profil mis à jour. La personne doit se reconnecter.");
+    if (f.mode === "new") await admFn("create", { email: email, full_name: name, role: role, password: pw });
+    else await admFn("update", { id: f.id, email: email, full_name: name, role: f.self ? undefined : role, password: pw || undefined });
+    A.busy = false;
+    toast(f.mode === "new" ? "Utilisateur créé." : "Utilisateur modifié.");
     await admCharger();
-  } catch (e) { admErr(e); await admCharger(); state.adm.err = (e && e.message) || ""; render(); }
+  } catch (e) { A.busy = false; f.err = e.message || String(e); render(); }
+}
+async function admUSupprimer(i) {
+  const A = state.adm, u = A.rows[i];
+  if (!admPeutEcrire()) { A.err = "Suppression impossible en mode démonstration."; render(); return; }
+  if (!confirm("Supprimer définitivement le compte « " + u.email + " » ?\nSes avis de manager seront supprimés aussi.\nCette action est irréversible.")) return;
+  try { await admFn("delete", { id: u.id }); toast("Utilisateur supprimé."); await admCharger(); }
+  catch (e) { admErr(e); render(); }
+}
+
+function admUFormulaire() {
+  const A = state.adm, f = A.uform;
+  if (!f) return "";
+  const inp = function (k, label, type, val, extra) {
+    return '<label class="fl" style="display:block;margin-top:10px">' + esc(label) + '<input id="adm-u-' + k + '" type="' + type + '" value="' + esc(val) + '" ' + (extra || "") +
+      ' style="display:block;width:100%;margin-top:4px;font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--lav2);border-radius:4px"></label>';
+  };
+  const sel = '<label class="fl" style="display:block;margin-top:10px">Profil<select id="adm-u-role" class="ctl" style="display:block;margin-top:4px"' + (f.self ? " disabled" : "") + ">" +
+    ["collab", "manager", "hrbp", "dir"].map(function (r) { return "<option" + (r === f.vals.role ? " selected" : "") + ">" + r + "</option>"; }).join("") + "</select></label>";
+  const edit = f.mode === "edit";
+  return '<div class="card" style="margin-bottom:16px"><div class="spechead">' + (edit ? "Modifier l'utilisateur" : "Ajouter un utilisateur") + "</div>" +
+    (f.err ? '<div class="obj"><b>Erreur :</b> ' + esc(f.err) + "</div>" : "") +
+    inp("email", "Adresse e-mail *", "email", f.vals.email, 'autocomplete="off"') + inp("full_name", "Nom affiché", "text", f.vals.full_name) + sel +
+    (f.self ? '<p class="note">Vous ne pouvez pas changer votre propre profil.</p>' : "") +
+    inp("password", edit ? "Nouveau mot de passe (laisser vide pour ne pas le changer)" : "Mot de passe * (8 caractères minimum)", "password", "", 'autocomplete="new-password"') +
+    inp("password2", "Confirmer le mot de passe", "password", "", 'autocomplete="new-password"') +
+    '<p class="note">Le mot de passe est envoyé en HTTPS à la fonction admin-users et n\'est jamais affiché ni enregistré par le site. Communiquez-le à la personne par un canal sûr.</p>' +
+    '<div class="btns"><button class="btn" onclick="admUEnregistrer()"' + (A.busy ? " disabled" : "") + ">" + (A.busy ? "Enregistrement…" : "Enregistrer") + '</button><button class="btn ghost" onclick="admUAnnuler()">Annuler</button></div></div>';
 }
 
 function admFormulaire() {
@@ -184,12 +253,11 @@ function admListe() {
   if (A.loading) return '<p class="note">Chargement…</p>';
   if (d.users) {
     if (!A.rows.length) return '<p class="note">Aucun utilisateur.</p>';
-    return '<table class="tbl" style="width:100%;border-collapse:collapse;font-size:13px"><tr><th align="left">E-mail</th><th align="left">Nom</th><th align="left">Profil</th></tr>' +
-      A.rows.map(function (u) {
+    return '<table class="tbl" style="width:100%;border-collapse:collapse;font-size:13px"><tr><th align="left">E-mail</th><th align="left">Nom</th><th align="left">Profil</th><th></th></tr>' +
+      A.rows.map(function (u, i) {
         const moi = DB.user && u.id === DB.user.id;
-        const sel = '<select class="ctl"' + (moi || !ecrire ? " disabled" : "") + " onchange=\"admChangerRole('" + esc(u.id) + "', this.value)\">" +
-          ["collab", "manager", "hrbp", "dir"].map(function (r) { return "<option" + (r === u.role ? " selected" : "") + ">" + r + "</option>"; }).join("") + "</select>";
-        return '<tr style="border-top:1px solid var(--lav2)"><td>' + esc(u.email) + (moi ? " (vous)" : "") + "</td><td>" + esc(u.full_name || "") + "</td><td>" + sel + "</td></tr>";
+        return '<tr style="border-top:1px solid var(--lav2)"><td>' + esc(u.email) + (moi ? " (vous)" : "") + "</td><td>" + esc(u.full_name || "") + "</td><td>" + esc(u.role) + "</td>" +
+          '<td style="white-space:nowrap"><button class="ctl" onclick="admUModifier(' + i + ')"' + (ecrire ? "" : " disabled") + '>Modifier</button> <button class="ctl" onclick="admUSupprimer(' + i + ')"' + (ecrire && !moi ? "" : " disabled") + ">Supprimer</button></td></tr>";
       }).join("") + "</table>";
   }
   if (!A.rows.length) return '<p class="note">Aucune ligne dans cette table.</p>';
@@ -210,6 +278,7 @@ function viewParametrage() {
     '<div class="btns" style="flex-wrap:wrap">' + chips + "</div>" +
     (d.danger ? '<div class="obj todo"><b>Attention :</b> ' + esc(d.danger) + "</div>" : "") +
     (A.err ? '<div class="obj"><b>Erreur :</b> ' + esc(A.err) + (/row-level security|permission denied|policy/i.test(A.err) ? " Exécutez supabase/migration-parametrage.sql et vérifiez que votre profil est HRBP." : "") + "</div>" : "") +
-    (d.users ? "" : '<div class="btns"><button class="btn" onclick="admNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter une ligne</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>") +
-    "</div>" + admFormulaire() + '<div class="card" style="margin-top:16px">' + admListe() + "</div>";
+    (d.users ? '<div class="btns"><button class="btn" onclick="admUNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter un utilisateur</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>"
+      : '<div class="btns"><button class="btn" onclick="admNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter une ligne</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>") +
+    "</div>" + admFormulaire() + admUFormulaire() + '<div class="card" style="margin-top:16px">' + admListe() + "</div>";
 }
