@@ -339,7 +339,7 @@ function viewSuivre() {
 // ---------------------------------------------------------------------------
 
 
-state.det = { running: false, loaded: false, rows: [], err: "", last: null,
+state.det = { running: false, loaded: false, rows: [], err: "", last: null, filtre: { from: "", to: "", run: "" },
   ia: { loaded: false, providers: [], provider: "", model: "", baseUrl: "", models: [], status: null, statusErr: null, busy: "", msg: "", key: "" }, errObj: null, diag: null };
 state.role = "collab";
 state.tab = "arrivees";
@@ -783,13 +783,27 @@ async function ajouterSource() {
   } catch (e) { toast("Ajout impossible : " + e.message, true); }
 }
 
-function viewDetection() {
-  const D = state.det;
-  const bloque = DB.demo || !DB.enabled;
+// Date locale AAAA-MM-JJ d'une analyse, pour le filtre.
+function detJour(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function detFiltreActif() { const f = state.det.filtre; return !!(f.from || f.to || f.run); }
+// Résultats groupés par analyse, filtrés par date d'exécution (bornes incluses).
+function detResultats() {
+  const D = state.det, f = D.filtre;
   const labels = { faible: "Confiance faible", moyenne: "Confiance moyenne", haute: "Confiance haute" };
   const cls = { faible: "b-slate", moyenne: "b-amber", haute: "b-emerald" };
-  const runs = {};
-  D.rows.forEach(function (d) { (runs[d.run_id] = runs[d.run_id] || []).push(d); });
+  const runs = {}, total = {};
+  D.rows.forEach(function (d) {
+    total[d.run_id] = 1;
+    if (f.run && d.run_id !== f.run) return;
+    const jour = detJour((d.detection_runs || {}).created_at);
+    if (f.from && jour < f.from) return;
+    if (f.to && jour > f.to) return;
+    (runs[d.run_id] = runs[d.run_id] || []).push(d);
+  });
   const ids = Object.keys(runs);
   const cards = ids.map(function (rid, n) {
     const list = runs[rid], meta = list[0].detection_runs || {};
@@ -813,6 +827,54 @@ function viewDetection() {
       }).join("");
   }).join("");
 
+  return { cards: cards, n: ids.length, total: Object.keys(total).length };
+}
+
+function setFiltreDate() {
+  const f = state.det.filtre;
+  f.run = ""; const sel = document.getElementById("det-run"); if (sel) sel.value = "";
+  f.from = document.getElementById("det-from").value;
+  f.to = document.getElementById("det-to").value;
+  majResultats();
+}
+// Choix d'une analyse précise dans la liste : remplace le filtre par dates.
+function setFiltreAnalyse() {
+  const f = state.det.filtre;
+  f.run = document.getElementById("det-run").value;
+  f.from = ""; f.to = "";
+  document.getElementById("det-from").value = ""; document.getElementById("det-to").value = "";
+  majResultats();
+}
+function filtreRapide(jours) {
+  const f = state.det.filtre;
+  f.run = ""; document.getElementById("det-run").value = "";
+  if (jours === null) { f.from = ""; f.to = ""; }
+  else { const d = new Date(); d.setDate(d.getDate() - jours); f.from = detJour(d.toISOString()); f.to = ""; }
+  document.getElementById("det-from").value = f.from;
+  document.getElementById("det-to").value = f.to;
+  majResultats();
+}
+// Met à jour la liste sans réafficher la page : les champs en cours de saisie sont conservés.
+function majResultats() {
+  const R = detResultats(), el = document.getElementById("det-results"), c = document.getElementById("det-count");
+  if (el) el.innerHTML = R.cards || detVide(R);
+  if (c) c.textContent = detCompte(R);
+}
+function detCompte(R) {
+  if (!R.total) return "";
+  return detFiltreActif() ? R.n + " analyse(s) affichée(s) sur " + R.total : R.total + " analyse(s)";
+}
+function detVide(R) {
+  if (R.total && !R.n) return '<div class="empty"><p>Aucune analyse à cette période. Modifiez les dates ou cliquez sur « Toutes ».</p></div>';
+  return "";
+}
+
+function viewDetection() {
+  const D = state.det;
+  const bloque = DB.demo || !DB.enabled;
+  const R = detResultats();
+  const cards = R.cards;
+
   const last = D.last ? '<div class="result"><b>Analyse terminée</b><p>' + D.last.nb_irritants + " irritant(s) proposé(s) à partir de " + D.last.nb_sources + " sources" +
     (D.last.nb_exclus ? " (" + D.last.nb_exclus + " mail confidentiel écarté, jamais envoyé à l'IA)" : "") +
     (D.last.provider ? " ; fournisseur " + esc(D.last.provider) + ", modèle " + esc(D.last.model) + ", clé : " + esc(D.last.key_source) : "") +
@@ -821,7 +883,24 @@ function viewDetection() {
   const err = errObj ? panneauErreur(errObj) : "";
   const aide = bloque ? '<div class="obj todo" style="margin-bottom:12px">La détection IA appelle une API payante : elle est réservée aux comptes réels avec le profil HRBP, pas à la démonstration.</div>' : "";
 
-  const empty = !ids.length ? '<div class="empty"><div class="big">🔎</div><p>Aucune analyse pour l\'instant. L\'agent lit les mails et comptes rendus de la base, repère les irritants du processus et propose la réponse la plus simple. Vous validez.</p></div>' : "";
+  const listeRuns = []; const vus = {};
+  D.rows.forEach(function (d) {
+    if (vus[d.run_id]) { vus[d.run_id].n++; return; }
+    vus[d.run_id] = { id: d.run_id, at: (d.detection_runs || {}).created_at || "", n: 1 }; listeRuns.push(vus[d.run_id]);
+  });
+  listeRuns.sort(function (a, b) { return a.at < b.at ? 1 : -1; });
+  const optRuns = '<option value="">Toutes les analyses</option>' + listeRuns.map(function (r) {
+    return '<option value="' + esc(r.id) + '"' + (r.id === D.filtre.run ? " selected" : "") + ">" + esc(r.at ? new Date(r.at).toLocaleString("fr-FR") : "date inconnue") + " · " + r.n + " irritant(s)</option>";
+  }).join("");
+  const filtreBar = !R.total ? "" : '<div class="card" style="margin-bottom:16px"><div class="spechead">Filtrer par date d\'exécution ou choisir une analyse</div>' +
+    '<div class="btns" style="flex-wrap:wrap;align-items:flex-end">' +
+    '<label class="fl" style="margin:0">Analyse<select id="det-run" onchange="setFiltreAnalyse()">' + optRuns + "</select></label>" +
+    '<label class="fl" style="margin:0">Du<input id="det-from" type="date" value="' + esc(D.filtre.from) + '" onchange="setFiltreDate()" /></label>' +
+    '<label class="fl" style="margin:0">Au<input id="det-to" type="date" value="' + esc(D.filtre.to) + '" onchange="setFiltreDate()" /></label>' +
+    '<button class="ctl" onclick="filtreRapide(0)">Aujourd\'hui</button><button class="ctl" onclick="filtreRapide(7)">7 derniers jours</button>' +
+    '<button class="ctl" onclick="filtreRapide(30)">30 derniers jours</button><button class="ctl" onclick="filtreRapide(null)">Toutes</button></div>' +
+    '<p class="note" id="det-count" style="margin:8px 0 0">' + esc(detCompte(R)) + "</p></div>";
+  const empty = !R.total ? '<div class="empty"><div class="big">🔎</div><p>Aucune analyse pour l\'instant. L\'agent lit les mails et comptes rendus de la base, repère les irritants du processus et propose la réponse la plus simple. Vous validez.</p></div>' : "";
 
   const form = '<div class="card"><div class="spechead">Ajouter une source à analyser</div>' +
     '<label class="fl">Type<select id="s-src"><option value="mail">Mail de la boîte RH</option><option value="cr">Compte rendu de réunion</option></select></label>' +
@@ -864,7 +943,7 @@ function viewDetection() {
       '<button class="ctl" onclick="chargerDetections()"' + (bloque ? " disabled" : "") + ">Actualiser</button>" +
       '<button class="ctl" onclick="lancerDiagnostic()"' + (bloque ? " disabled" : "") + ">Diagnostiquer</button></div>" +
     last + err + panneauDiagnostic() +
-    '<div class="row c-3-2"><div style="margin-top:8px">' + (bloque ? "" : iaCard) + (cards || empty) + "</div><div>" + form +
+    '<div class="row c-3-2"><div style="margin-top:8px">' + (bloque ? "" : iaCard) + filtreBar + '<div id="det-results">' + (cards || detVide(R) || empty) + "</div></div><div>" + form +
     '<div class="card trust" style="margin-top:16px"><h3>Garde-fous</h3><ul class="arrows">' +
       "<li><span>✓</span><span>Les clés ne sont jamais dans le site ni dans GitHub : saisie unique, base chiffrée ou secret Supabase.</span></li>" +
       "<li><span>✓</span><span>Chaque irritant cite des sources réelles : sans source valide, il est rejeté.</span></li>" +

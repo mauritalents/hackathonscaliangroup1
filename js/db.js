@@ -185,7 +185,7 @@ async function dbLoadAiConfig() {
   return { providers: p.data || [], defaultProvider: st.data ? st.data.default_provider : null };
 }
 async function dbLoadDetections() {
-  const r = await DB.client.from("detections").select("*, detection_runs(created_at,model,resume,nb_events)").order("created_at", { ascending: false }).limit(60);
+  const r = await DB.client.from("detections").select("*, detection_runs(created_at,model,resume,nb_events)").order("created_at", { ascending: false }).limit(500);
   if (r.error) throw r.error;
   return r.data || [];
 }

@@ -17,3 +17,7 @@ Créer, modifier, supprimer un utilisateur et définir son mot de passe exigent 
 ### Activer ou désactiver un irritant
 
 Dans Paramétrage, Irritants, le bouton Désactiver retire l'irritant de tous les écrans sans le supprimer (ses statuts et avis sont conservés) ; Activer le remet. Exécutez une fois `supabase/migration-irritants-actif.sql`.
+
+### Filtrer les analyses par date
+
+Dans Détection IA, le bloc « Filtrer par date d'exécution » limite les résultats à une période (bornes incluses, date locale) avec les raccourcis Aujourd'hui, 7 jours, 30 jours et Toutes. Une liste « Analyse » permet aussi de choisir une analyse précise par sa date et son heure. Le site charge les 500 dernières propositions.
