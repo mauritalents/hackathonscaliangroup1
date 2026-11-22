@@ -21,3 +21,7 @@ Dans Paramétrage, Irritants, le bouton Désactiver retire l'irritant de tous le
 ### Filtrer les analyses par date
 
 Dans Détection IA, le bloc « Filtrer par date d'exécution » limite les résultats à une période (bornes incluses, date locale) avec les raccourcis Aujourd'hui, 7 jours, 30 jours et Toutes. Une liste « Analyse » permet aussi de choisir une analyse précise par sa date et son heure. Le site charge les 500 dernières propositions.
+
+### Gérer les clés d'API depuis le site
+
+Paramétrage, Clés d'API : pour chaque fournisseur, le HRBP voit si une clé personnelle, une clé par défaut du projet et un secret Supabase existent, avec la date et l'auteur de la clé par défaut. Il peut saisir ou remplacer sa clé personnelle, définir ou remplacer la clé par défaut du projet, supprimer l'une ou l'autre et tester chaque clé (le test liste les modèles du fournisseur). Aucune clé n'est jamais affichée. Cette page exige la version 4 de la fonction `detect-irritants` : redéployez `supabase/functions/detect-irritants/index.ts`. Le secret Supabase `<FOURNISSEUR>_API_KEY` se gère dans Supabase, pas dans le site.

@@ -30,10 +30,11 @@ const ADMIN_TABLES = [
     { k: "kind", l: "Type d'API", t: "sel", opts: ["anthropic", "openai"], req: 1 }, { k: "base_url", l: "Adresse de l'API", t: "text", nul: 1 },
     { k: "default_model", l: "Modèle par défaut", t: "text", nul: 1 }, { k: "key_hint", l: "Indice de clé", t: "text", nul: 1 },
     { k: "position", l: "Position", t: "int", req: 1 }, { k: "enabled", l: "Actif", t: "bool" }] },
-  { id: "profiles", label: "Utilisateurs et profils", users: true }
+  { id: "profiles", label: "Utilisateurs et profils", users: true },
+  { id: "apikeys", label: "Clés d'API", keys: true }
 ];
 
-state.adm = { table: "irritants", rows: [], loading: false, err: "", form: null, busy: false, uform: null };
+state.adm = { table: "irritants", rows: [], loading: false, err: "", form: null, busy: false, uform: null, kform: null, tests: {}, kinfo: null };
 
 function admDef() { return ADMIN_TABLES.find(function (t) { return t.id === state.adm.table; }); }
 function admPeutEcrire() { return !!(DB.enabled && !DB.demo && DB.user && !DB.user.is_anonymous); }
@@ -41,9 +42,14 @@ function admErr(e) { state.adm.err = (e && e.message) || String(e); }
 
 async function admCharger() {
   const A = state.adm, d = admDef();
-  A.loading = true; A.err = ""; A.form = null; A.uform = null; render();
+  A.loading = true; A.err = ""; A.form = null; A.uform = null; A.kform = null; render();
   try {
-    if (d.users) {
+    if (d.keys) {
+      const pg = await dbAi("ping");
+      if (pg.version < 4) throw new Error("La fonction detect-irritants déployée est en version " + pg.version + " : redéployez supabase/functions/detect-irritants/index.ts (version 4) pour gérer les clés.");
+      const k = await dbAi("keys_overview");
+      A.rows = k.providers || []; A.kinfo = { default_provider: k.default_provider, can_store: k.can_store };
+    } else if (d.users) {
       const r = await DB.client.from("profiles").select("id,email,full_name,role").not("email", "is", null).order("email");
       if (r.error) throw r.error;
       A.rows = r.data || [];
@@ -246,6 +252,72 @@ function admUFormulaire() {
     '<div class="btns"><button class="btn" onclick="admUEnregistrer()"' + (A.busy ? " disabled" : "") + ">" + (A.busy ? "Enregistrement…" : "Enregistrer") + '</button><button class="btn ghost" onclick="admUAnnuler()">Annuler</button></div></div>';
 }
 
+// Gestion des clés d'API : tout passe par la fonction detect-irritants, qui seule voit les clés en clair.
+function admKOuvrir(i, scope) { state.adm.kform = { provider: state.adm.rows[i].id, label: state.adm.rows[i].label, scope: scope, err: "" }; render(); }
+function admKAnnuler() { state.adm.kform = null; render(); }
+async function admKEnregistrer() {
+  const A = state.adm, f = A.kform;
+  if (!f || A.busy) return;
+  const el = document.getElementById("adm-k-key");
+  const key = el ? el.value.trim() : "";
+  if (key.length < 8) { f.err = "La clé est trop courte (8 caractères minimum)."; render(); return; }
+  A.busy = true; f.err = ""; render();
+  try {
+    await dbAi(f.scope === "user" ? "save_key" : "set_default", { provider: f.provider, api_key: key });
+    A.busy = false; toast(f.scope === "user" ? "Votre clé est mémorisée." : "Clé par défaut du projet enregistrée.");
+    await admCharger();
+  } catch (e) { A.busy = false; f.err = e.message || String(e); render(); }
+}
+async function admKSupprimer(i, scope) {
+  const A = state.adm, r = A.rows[i];
+  const txt = scope === "user" ? "Supprimer votre clé personnelle pour " + r.label + " ?" : "Supprimer la clé par défaut du projet pour " + r.label + " ?\nTous les HRBP qui s'en servent devront saisir leur propre clé.";
+  if (!confirm(txt)) return;
+  try { await dbAi(scope === "user" ? "delete_key" : "delete_default", { provider: r.id }); toast("Clé supprimée."); await admCharger(); }
+  catch (e) { admErr(e); render(); }
+}
+async function admKTester(i, source) {
+  const A = state.adm, r = A.rows[i], id = r.id + ":" + source;
+  A.tests[id] = { wait: true }; render();
+  try { const x = await dbAi("test_key", { provider: r.id, source: source }); A.tests[id] = { ok: !!x.ok, message: x.message || "" }; }
+  catch (e) { A.tests[id] = { ok: false, message: e.message || String(e) }; }
+  render();
+}
+function admKResultat(id) {
+  const t = state.adm.tests[id];
+  if (!t) return "";
+  if (t.wait) return '<div class="note" style="margin:2px 0 0">Test en cours…</div>';
+  return '<div class="note" style="margin:2px 0 0;color:' + (t.ok ? "#047857" : "#be123c") + '">' + esc(t.message) + "</div>";
+}
+function admKFormulaire() {
+  const f = state.adm.kform;
+  if (!f) return "";
+  return '<div class="card" style="margin-bottom:16px"><div class="spechead">' + (f.scope === "user" ? "Ma clé personnelle" : "Clé par défaut du projet") + " · " + esc(f.label) + "</div>" +
+    (f.err ? '<div class="obj"><b>Erreur :</b> ' + esc(f.err) + "</div>" : "") +
+    '<label class="fl" style="display:block;margin-top:10px">Clé d\'API<input id="adm-k-key" type="password" autocomplete="off" placeholder="Collez la clé du fournisseur" style="display:block;width:100%;margin-top:4px;font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--lav2);border-radius:4px"></label>' +
+    '<p class="note">' + (f.scope === "user" ? "Elle est chiffrée côté serveur, rattachée à votre compte, et jamais relue par le site. Une nouvelle clé remplace l'ancienne."
+      : "Elle est chiffrée côté serveur et partagée par tous les HRBP. Ce fournisseur devient aussi le fournisseur par défaut du projet. Une nouvelle clé remplace l'ancienne.") + "</p>" +
+    '<div class="btns"><button class="btn" onclick="admKEnregistrer()"' + (state.adm.busy ? " disabled" : "") + ">" + (state.adm.busy ? "Enregistrement…" : "Enregistrer") + '</button><button class="btn ghost" onclick="admKAnnuler()">Annuler</button></div></div>';
+}
+function admKListe() {
+  const A = state.adm, ecrire = admPeutEcrire(), info = A.kinfo || {};
+  if (!A.rows.length) return '<p class="note">Aucun fournisseur.</p>';
+  const fmt = function (d) { return d ? new Date(d).toLocaleString("fr-FR") : ""; };
+  return (info.can_store === false ? '<div class="obj todo"><b>Mémorisation impossible :</b> ajoutez le secret KEY_ENCRYPTION_SECRET dans Supabase, Edge Functions, Secrets. Les clés saisies pour un seul appel restent possibles.</div>' : "") +
+    '<div style="overflow-x:auto"><table class="tbl" style="width:100%;border-collapse:collapse;font-size:13px"><tr><th align="left">Fournisseur</th><th align="left">Ma clé</th><th align="left">Clé par défaut du projet</th><th align="left">Secret Supabase</th></tr>' +
+    A.rows.map(function (r, i) {
+      const u = r.user_key, d = r.default_key;
+      const btn = function (label, fn, off) { return '<button class="ctl" onclick="' + fn + '"' + (off || !ecrire ? " disabled" : "") + ">" + label + "</button> "; };
+      const cu = (u ? "Définie · " + esc(fmt(u.updated_at)) : "Aucune") + '<div style="margin-top:4px">' + btn(u ? "Remplacer" : "Saisir", "admKOuvrir(" + i + ",'user')", info.can_store === false) +
+        (u ? btn("Tester", "admKTester(" + i + ",'user')") + btn("Supprimer", "admKSupprimer(" + i + ",'user')") : "") + "</div>" + admKResultat(r.id + ":user");
+      const cd = (d ? "Définie · " + esc(fmt(d.updated_at)) + (d.updated_by ? " · par " + esc(d.updated_by) : "") : "Aucune") +
+        (info.default_provider === r.id ? ' <b>(fournisseur par défaut)</b>' : "") + '<div style="margin-top:4px">' + btn(d ? "Remplacer" : "Saisir", "admKOuvrir(" + i + ",'default')", info.can_store === false) +
+        (d ? btn("Tester", "admKTester(" + i + ",'default')") + btn("Supprimer", "admKSupprimer(" + i + ",'default')") : "") + "</div>" + admKResultat(r.id + ":default");
+      const ce = r.env_key ? "Définie" + '<div style="margin-top:4px">' + btn("Tester", "admKTester(" + i + ",'env')") + "</div>" + admKResultat(r.id + ":env") : "Aucune";
+      return '<tr style="border-top:1px solid var(--lav2);vertical-align:top"><td><b>' + esc(r.label) + "</b>" + (r.enabled ? "" : " (inactif)") + "</td><td>" + cu + "</td><td>" + cd + "</td><td>" + ce + "</td></tr>";
+    }).join("") + "</table></div>" +
+    '<p class="note">Ordre d\'utilisation : clé saisie dans Détection IA, puis ma clé, puis clé par défaut du projet, puis secret Supabase. Le secret Supabase se gère dans Supabase (Edge Functions, Secrets), jamais dans ce site. Aucune clé n\'est jamais affichée.</p>';
+}
+
 function admFormulaire() {
   const A = state.adm, d = admDef(), f = A.form;
   if (!f) return "";
@@ -267,6 +339,7 @@ function admFormulaire() {
 function admListe() {
   const A = state.adm, d = admDef(), ecrire = admPeutEcrire();
   if (A.loading) return '<p class="note">Chargement…</p>';
+  if (d.keys) return admKListe();
   if (d.users) {
     if (!A.rows.length) return '<p class="note">Aucun utilisateur.</p>';
     return '<table class="tbl" style="width:100%;border-collapse:collapse;font-size:13px"><tr><th align="left">E-mail</th><th align="left">Nom</th><th align="left">Profil</th><th></th></tr>' +
@@ -294,7 +367,7 @@ function viewParametrage() {
     '<div class="btns" style="flex-wrap:wrap">' + chips + "</div>" +
     (d.danger ? '<div class="obj todo"><b>Attention :</b> ' + esc(d.danger) + "</div>" : "") +
     (A.err ? '<div class="obj"><b>Erreur :</b> ' + esc(A.err) + (/row-level security|permission denied|policy/i.test(A.err) ? " Exécutez supabase/migration-parametrage.sql et vérifiez que votre profil est HRBP." : /actif/.test(A.err) ? " Exécutez supabase/migration-irritants-actif.sql." : "") + "</div>" : "") +
-    (d.users ? '<div class="btns"><button class="btn" onclick="admUNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter un utilisateur</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>"
+    (d.keys ? '<div class="btns"><button class="btn ghost" onclick="admCharger()">Actualiser</button></div>' : d.users ? '<div class="btns"><button class="btn" onclick="admUNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter un utilisateur</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>"
       : '<div class="btns"><button class="btn" onclick="admNouveau()"' + (ecrire ? "" : " disabled") + ">Ajouter une ligne</button><button class=\"btn ghost\" onclick=\"admCharger()\">Actualiser</button></div>") +
-    "</div>" + admFormulaire() + admUFormulaire() + '<div class="card" style="margin-top:16px">' + admListe() + "</div>";
+    "</div>" + admFormulaire() + admUFormulaire() + admKFormulaire() + '<div class="card" style="margin-top:16px">' + admListe() + "</div>";
 }

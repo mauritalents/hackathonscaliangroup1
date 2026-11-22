@@ -66,7 +66,7 @@ const TOOL = {
 
 const cut = (s: unknown, n: number) => String(s ?? "").slice(0, n);
 
-const FN_VERSION = 3; // incrémenté à chaque évolution ; le site compare avec la version qu'il attend
+const FN_VERSION = 4; // incrémenté à chaque évolution ; le site compare avec la version qu'il attend
 
 class ApiError extends Error {
   status: number; code: string;
@@ -215,6 +215,27 @@ Deno.serve(async (req) => {
     if (prof?.role !== "hrbp") return json({ error: "La détection IA est réservée au HRBP.", code: "ROLE" }, 403);
     const uid = u.user.id;
 
+    // Vue d'ensemble des clés de tous les fournisseurs (jamais les clés elles-mêmes).
+    if (action === "keys_overview") {
+      const { data: provs, error: pe0 } = await admin.from("ai_providers").select("id,label,enabled,position").order("position");
+      if (pe0) return json({ error: "Tables IA absentes ou illisibles (" + pe0.message + ") : exécutez supabase/migration-ia.sql.", code: "TABLES" }, 500);
+      const { data: uks } = await admin.from("ai_user_keys").select("provider,updated_at").eq("user_id", uid);
+      const { data: dks } = await admin.from("ai_default_keys").select("provider,updated_at,updated_by");
+      const { data: st } = await admin.from("ai_settings").select("default_provider").eq("id", 1).maybeSingle();
+      const byIds = [...new Set((dks ?? []).map((d: { updated_by: string | null }) => d.updated_by).filter(Boolean))] as string[];
+      const { data: who } = byIds.length ? await admin.from("profiles").select("id,email").in("id", byIds) : { data: [] };
+      const mail = new Map((who ?? []).map((w: { id: string; email: string | null }) => [w.id, w.email]));
+      const rows = (provs ?? []).map((pr: { id: string; label: string; enabled: boolean }) => {
+        const uk = (uks ?? []).find((x: { provider: string }) => x.provider === pr.id);
+        const dk = (dks ?? []).find((x: { provider: string }) => x.provider === pr.id);
+        return { id: pr.id, label: pr.label, enabled: pr.enabled,
+          user_key: uk ? { updated_at: uk.updated_at } : null,
+          default_key: dk ? { updated_at: dk.updated_at, updated_by: mail.get(dk.updated_by) ?? null } : null,
+          env_key: !!Deno.env.get(pr.id.toUpperCase() + "_API_KEY") };
+      });
+      return json({ providers: rows, default_provider: st?.default_provider ?? null, can_store: !!Deno.env.get("KEY_ENCRYPTION_SECRET") });
+    }
+
     // 2. Fournisseur choisi
     const providerId = String(body.provider ?? "");
     const { data: prow, error: pe } = await admin.from("ai_providers").select("id,label,kind,base_url,default_model").eq("id", providerId).eq("enabled", true).maybeSingle();
@@ -277,6 +298,31 @@ Deno.serve(async (req) => {
       if (Object.keys(patch).length) await admin.from("ai_providers").update(patch).eq("id", providerId);
       await admin.from("ai_settings").upsert({ id: 1, default_provider: providerId, updated_at: new Date().toISOString() });
       return json({ ok: true });
+    }
+    if (action === "delete_default") {
+      await admin.from("ai_default_keys").delete().eq("provider", providerId);
+      return json({ ok: true });
+    }
+    // Teste une clé précise en listant les modèles du fournisseur. Répond toujours 200 avec le résultat.
+    if (action === "test_key") {
+      const src = String(body.source ?? "");
+      let key: string | null = null;
+      if (src === "user") {
+        const { data: uk } = await admin.from("ai_user_keys").select("ciphertext,iv").eq("user_id", uid).eq("provider", providerId).maybeSingle();
+        key = uk ? await decrypt(uk.ciphertext, uk.iv) : null;
+      } else if (src === "default") {
+        const { data: dk } = await admin.from("ai_default_keys").select("ciphertext,iv").eq("provider", providerId).maybeSingle();
+        key = dk ? await decrypt(dk.ciphertext, dk.iv) : null;
+      } else if (src === "env") {
+        key = Deno.env.get(providerId.toUpperCase() + "_API_KEY") ?? null;
+      } else return json({ error: "Source de clé inconnue.", code: "ACTION" }, 400);
+      if (!key) return json({ ok: false, message: "Clé introuvable ou illisible (secret de chiffrement modifié ?)." });
+      try {
+        const list = await listModels(provider, base, key);
+        return json({ ok: true, message: "Clé valide : " + list.length + " modèle(s) accessible(s)." });
+      } catch (e) {
+        return json({ ok: false, message: e instanceof ApiError ? e.message : "Échec du test." });
+      }
     }
     if (action === "models") {
       const k = await resolveKey(String(body.api_key ?? ""));
